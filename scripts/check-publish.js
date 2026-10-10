@@ -32,7 +32,13 @@ try {
     '--registry=https://registry.npmjs.org/'],
     { cwd: root, env: childEnv, encoding: 'utf8', timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
   assert.equal(result.status, 0);
-  const summary = JSON.parse(result.stdout);
+  const output = JSON.parse(result.stdout);
+  // npm 10 returns the summary directly; newer npm 11 keys it by package name.
+  // Accept exactly one package in the keyed form, then verify the same identity
+  // and archive integrity in either format.
+  const keyed = Object.hasOwn(output, pkg.name);
+  if (keyed) assert.deepEqual(Object.keys(output), [pkg.name]);
+  const summary = keyed ? output[pkg.name] : output;
   assert.equal(summary.name, pkg.name);
   assert.equal(summary.version, pkg.version);
   assert.equal(summary.integrity, 'sha512-' + createHash('sha512').update(archive).digest('base64'));
