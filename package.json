@@ -1,0 +1,85 @@
+{
+  "name": "ulda-auth",
+  "version": "1.0.0",
+  "description": "Client SDK for encrypted JSON resources over ULDA and Socket.IO",
+  "license": "SEE LICENSE IN LICENSE.md",
+  "type": "module",
+  "main": "./src/index.js",
+  "types": "./types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./types/index.d.ts",
+      "import": "./src/index.js"
+    },
+    "./browser": {
+      "types": "./types/index.d.ts",
+      "import": "./dist/ulda-library.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src/*.js",
+    "types/index.d.ts",
+    "dist/ulda-library.js",
+    "dist/THIRD_PARTY_LICENSES.md",
+    "README.md",
+    "LICENSE.md",
+    "MANIFEST.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "docs/API.md",
+    "docs/PROTOCOL.md",
+    "docs/PIPELINES.md",
+    "docs/RECOVERY.md",
+    "docs/SECRET_LIFECYCLE.md",
+    "docs/LICENSING.md",
+    "docs/RELEASE.md"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test --test-reporter=./scripts/safe-test-reporter.js tests/*.test.js",
+    "build": "node scripts/build.js",
+    "test:bundle": "node scripts/run-safe.js scripts/check-bundle.js",
+    "test:types": "tsc -p tests/types/tsconfig.json",
+    "check:secrets": "node scripts/check-secrets.js",
+    "test:package": "node scripts/check-package.js",
+    "release:check": "npm run check:secrets && npm test && npm run test:types && npm run build && npm run test:bundle && npm run test:package && npm run test:publish",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run release:check",
+    "test:browser": "node scripts/check-browser.js",
+    "test:publish": "node scripts/check-publish.js"
+  },
+  "dependencies": {
+    "socket.io-client": "4.8.1",
+    "socket.io-parser": "4.2.7",
+    "ulda-core": "1.0.1"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12",
+    "playwright-core": "1.62.1",
+    "socket.io": "4.8.1",
+    "typescript": "7.0.2"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ulda-io/ulda-auth.git"
+  },
+  "homepage": "https://github.com/ulda-io/ulda-auth#readme",
+  "bugs": {
+    "url": "https://github.com/ulda-io/ulda-auth/issues"
+  },
+  "keywords": [
+    "ulda",
+    "encrypted-storage",
+    "client-sdk",
+    "socket.io",
+    "webcrypto"
+  ],
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org/",
+    "access": "public",
+    "tag": "latest"
+  }
+}
