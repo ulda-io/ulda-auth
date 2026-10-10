@@ -1,166 +1,94 @@
-# ULDA Library — безопасность и модель угроз
+# Security policy
 
-Этот документ описывает конкретные свойства реализации и её ограничения. Отсутствие любых дырок или пригодность для production не заявляются.
+## Report a vulnerability
 
-Документ относится к подготовленному выпуску ulda-auth 1.0.0, ещё не опубликованному.
-Сообщения об уязвимостях: **mark@shaposhnik.ch**, приватно. GitHub Security Advisories
-будет вторым каналом после включения private vulnerability reporting в официальном
-репозитории; пока он не создан/не настроен, используйте email. Не отправляйте пароли,
-origin или пользовательские данные в публичные Issues. Политика поддержки стабильных
-версий начнётся с отдельно объявленного выпуска. В воспроизведении используйте синтетические данные.
+Report vulnerabilities privately to [mark@shaposhnik.ch](mailto:mark@shaposhnik.ch). You may also use [GitHub private vulnerability reporting](https://github.com/ulda-io/ulda-auth/security/advisories/new) when it is enabled for the repository.
 
-## Защищаемые данные
+Include the affected package version, environment, expected and observed behavior, impact, and a minimal reproduction using synthetic data. Do not include live passwords, keys, origins, tokens, decrypted catalogs or customer data. Do not disclose an unpatched vulnerability in a public issue.
 
-Явный `recoverContent(name)` использует только подтверждённую копию SDK, создаёт новый ID/секреты
-и сохраняет старый ресурс. Это не автоматическая реакция на неподлинный ответ и не гарантия свежести
-источника. Неразрешённые исходы не запускают повтор записи; правила и границы — [RECOVERY.md](docs/RECOVERY.md).
+This policy covers the client SDK. Report issues in independently maintained dependencies to their maintainers as appropriate.
 
-Полный origin, JSON content, каталог master, имена content и их ключи никогда не должны попадать в открытое тело Socket.IO-события.
-Они находятся в аутентифицированном шифроконтейнере. ID, публичные witness, общая версия контейнера, salt, nonce, размер ciphertext и последовательность обращений видны серверу. Открытой метки master/content нет.
-HTTPS защищает транспорт до сервера; end-to-end шифрование скрывает содержимое и от сервера.
-Сервер видит, какие ID читаются одним соединением и меняются совместно; скрытие этих метаданных не реализовано.
+## Protected data and visible metadata
 
-## Криптографический профиль
+The SDK encrypts application JSON, the full ULDA origin, resource tokens, and the master's catalog of content names and secrets before sending them to the server. Public snapshots expose copies of application JSON, not the internal catalog or origin.
 
-- AES-256-GCM, случайный 96-битный nonce на каждое шифрование, 128-битный tag.
-- Master: PBKDF2-HMAC-SHA-256, фиксированные 600000 итераций, случайный salt 16 байт.
-- Content: отдельный случайный 256-битный секрет внутри зашифрованного master; AES-ключ через HKDF-SHA-256 с отдельным случайным salt ресурса и фиксированным domain info.
-- Все генерации через `crypto.getRandomValues`; шифрование/KDF — `crypto.subtle`, не собственный шифр.
-- CryptoKey неэкспортируемые. Origin генерируется отдельно от ключа шифрования.
-- AAD включает domain separation, общий header шифроконтейнера v2 и весь witness. Подмена witness, версии, salt, nonce, ciphertext или tag приводит к отказу клиента.
-- Расшифрованный контейнер содержит случайный token ресурса. Для content token сверяется с master, для уже открытого master — с закреплённым в памяти token.
-- После открытия `sign(origin)` должен в точности совпасть с witness. Иначе снимок не устанавливается.
+The server can see resource IDs, public witnesses, the container header, salts, nonces, ciphertext lengths, access timing and which resources are requested or changed together. Records contain no explicit master/content label, but traffic patterns and the public X/S mode can reveal relationships. This is not a traffic-analysis-resistant protocol.
 
-PBKDF2 выбран как доступный в Web Crypto профиль лёгкого прототипа, а не как утверждение о превосходстве над memory-hard KDF. Параметры не принимаются произвольно из сетевого сообщения.
+HTTPS protects the connection to the selected server. An ID identifies a resource; it is not a password or authorization credential. The compatible storage model permits reading ciphertext by ID.
 
-## Что обеспечено на границе отправки
+## Cryptographic profile
 
-Create/Update принимают внутренний handle, который создаёт только модуль шифрования после успешного AES-GCM.
-Транспорт не принимает произвольный `{payload: ...}`. Delete тоже требует handle, построенный через `sign(advance(origin))`; передать полный origin как готовый witness через этот внутренний интерфейс нельзя.
-В смешанном Delete обновление master требует такого же непрозрачного результата `seal`, как обычный Update.
-Диагностика SDK/стенда содержит только разрешённые коды этапов, ID, счётчики и размеры. Весь wire-body, origin,
-ключи, имена и открытый JSON в trace не копируются. Обработчики получают неизменяемые сводки.
-Это защита от ошибок интеграции внутри SDK. Код с полным доступом к процессу/странице способен обойти SDK или перехватить секреты и не входит в эту границу.
+| Component | Profile |
+|---|---|
+| Resource encryption | AES-256-GCM, random 96-bit nonce per encryption, 128-bit authentication tag |
+| Master key | PBKDF2-HMAC-SHA-256, 600,000 iterations, random 16-byte salt |
+| Content key | HKDF-SHA-256 from an independent random 32-byte secret and random 16-byte salt |
+| AES keys | Non-extractable Web Crypto CryptoKey objects |
+| ULDA chain | Core compactV1, SHA-256, N=5, 256-bit origin blocks, X or S mode |
+| Container | Version 2; authenticated header and complete witness |
 
-Формат origin и witness в ядре не содержит надёжного различителя «секрет/публичное». Поэтому одной проверки header недостаточно; важен путь создания пакета.
-В самом ULDA `w[k,0] = origin[k,0]`: старейший случайный блок публикуется намеренно. Полную вечную секретность всех отдельных блоков origin обещать нельзя.
+The encryption key and ULDA origin serve different purposes. The witness supports chain validation; holders of the encryption key authenticate the payload. A server without that key cannot verify the AES-GCM tag.
 
-## Входящие сообщения и ошибки
+The SDK checks the authenticated container, resource identity token, mode and equality of `sign(origin)` with the received witness. The exact container and additional authenticated data are specified in the [protocol](docs/PROTOCOL.md).
 
-В версии 1.0.0 чтения connect/refresh и Hello фиксируют эпоху ошибок. Новая ошибка целостности
-в ходе ожидания не снимается завершением прежнего запроса: операция отклоняется с
-NEEDS_RESYNC, проверенная копия остаётся доступна. Первый connect в таком случае не
-устанавливает контекст; явный повтор connect выполняет новое чтение. После сбоя Hello
-или до регистрации явный reconnect заново проверяет готовность.
-Перед ещё не отправленными стадиями мутаций проверяется та же эпоха. Уже отправленные
-запросы сохраняют свой ACK/UNKNOWN_OUTCOME; это не отмена и не повтор серверной записи.
+ULDA intentionally exposes its oldest origin block in a public witness. The full origin is never sent in plaintext; perpetual secrecy of every individual block is not a property of the core.
 
+A party that obtains an encrypted master can attempt offline password guessing. Use a strong password. The fixed KDF cost slows guessing but does not make a weak password safe.
 
-Схема сообщения, список полей, ID, бинарные типы/размеры и canonical compactV1 проверяются до криптографических операций.
-Сетевые witness/payload — Uint8Array/Buffer/ArrayBuffer; внешнего Base64 нет. Числовые массивы, строковые подмены,
-пустые/слишком большие и разделяемые буферы отвергаются. Границы view учитываются, поэтому соседние байты
-общего backing buffer не отправляются. На границах пакетов делаются собственные копии; состояния сравниваются
-по байтам, а не по ссылочному равенству массивов. Внутри зашифрованного JSON Base64URL секретов остаётся.
-Socket.IO Decoder ограничивает накопление до 128 вложений, 8 MiB их суммарного размера,
-1100000 байт на вложение и 64 KiB UTF-8 текстового заголовка. Проверки идут до добавления
-очередного вложения в сборку; ошибка или disconnect освобождают незавершённую сборку.
-Это согласует лимит SDK в 64 ресурса со стандартным binary wire и не отменяет проверку
-прикладного пакета. Уже полученный транспортом кадр до этой проверки мог быть выделен runtime;
-это не гарантия общего лимита памяти браузера/процесса.
-N, алгоритм и режим ограничены профилем. Reserved/backup/noncanonical-пакеты отвергаются сравнением с canonical re-encoding.
-Сырые серверные сообщения об ошибках не попадают в Error/лог; известные коды отображаются в фиксированный локальный текст.
-Приватные состояния — поля `#private`, в `JSON.stringify(sdk)` их нет. В пользовательских снимках нет каталожных ключей или origin.
-JSON клонируется без вызова getters/toJSON; запрещены циклы, нестандартные прототипы, undefined, BigInt и нечисловые числа.
-Изменение `__proto__` обрабатывается как собственный ключ JSON, не как изменение прототипа.
+## Trust model
 
-## Модель доверия 1.0, согласованная 06.10.2026
+The SDK verifies authenticity and consistency relative to state it has already accepted. It does not prove that the server has supplied the globally latest state.
 
-Клиент проверяет целостность и приватное содержимое файлов. Серверу доверяются выбор текущего
-аутентифицированного снимка при refresh/reconnect и сообщение об удалении. История промежуточных
-witness, durable pinning и криптографические tombstone не входят в эту модель 1.0.
-Это выбранный пользователем договор для работы с нескольких устройств, не полное недоверие серверу.
+- **First open:** the client has no independently persisted witness or resource token. It trusts the selected server to return the requested master. The database ID is assigned after encryption and is not cryptographically bound into that initial container. Substitution with another valid master encrypted under the same password is not fully prevented at first open.
+- **Live changes:** accepted updates must link to the known chain under the core's transition rules. The client may bridge a delayed ACK using exact candidates it actually prepared and sent.
+- **Refresh and reconnect:** an authenticated newer snapshot may be accepted without the missing intermediate chain history. Mode and token must match the known resource; older states and different bytes at the same age are rejected.
+- **New session:** there is no durable age anchor across closing the SDK or restarting the application. An old valid encrypted snapshot may therefore be indistinguishable from the latest one.
+- **Deletion:** `Changed.deleted` is a trusted server statement, not a cryptographic tombstone. It removes the local resource; deleting the master closes the context.
+- **Storage:** the server must validate witnesses and commit each write batch atomically. It must distinguish a definite rejection from an uncertain outcome.
 
-После Create собственного master SDK принимает подготовленное локальное состояние только по корректному
-ACK с ID, без повторной загрузки и расшифровки. Неизвестный исход не открывает контекст автоматически.
-Сервер не эхо-рассылает автору его же запись. Для проверки чужого следующего состояния до собственного ACK
-клиент использует только реально подготовленные и отправленные приватные кандидаты, проверяя каждое ребро
-обычным core.verify. Неизвестные шаги X не разрешаются. Эти состояния не входят в trace/wire/public snapshot
-и освобождаются после подтверждения продвижения либо close. Чужой Changed не заменяет ACK и не превращает
-UNKNOWN_OUTCOME в успешное завершение нашей команды.
+A malicious or compromised server can withhold, corrupt or delete records, misreport deletion, and deny service. It can also hide a newer valid version. Client encryption does not provide server availability, access control or an audit log.
 
-1. Первый master получается с доверенного адреса по HTTPS. ID сам по себе не является авторизацией. Внешнего подтверждения первого witness или долговременного pinning пока нет.
-2. Между перезапусками нет сохранённой нижней границы возраста. Старый, но корректно зашифрованный снимок master может быть неотличим от последнего для нового экземпляра. Даже подмена одним из других master с тем же паролем не полностью закрыта первоначальным договором: после Create сервер назначает ID, который заранее неизвестен шифрованию.
-3. `refresh`/reconnect принимает аутентифицированный снимок через большой gap по решению пользователя 06.10. Это доверие текущему снимку сервера, а не доказательство непрерывной X-истории. Проверки режима/token/AEAD/sign(origin) обязательны; более старый возраст или другой пакет того же возраста отвергается. Сам по себе успех не доказывает отсутствие скрытой сервером более новой версии.
-4. Сервер должен атомарно проверять witness и фиксировать весь массив. Он должен честно классифицировать определённую ошибку и неизвестный исход.
-5. ULDA не связывает payload с witness для публичной проверки сервером. AES-GCM проверяют держатели ключа. Злонамеренный сервер может испортить/удалить данные или вызвать отказ; защита доступности и серверная авторизация не реализованы этим SDK.
-6. CORS_ID, права доступа, защита начальной регистрации и злоупотреблений — договор следующей интеграции. Тестовый сервер не реализует авторизацию и не должен обслуживать реальные данные.
-7. Любой участник, получивший master/key, имеет соответствующие секреты. Раздельные пользовательские роли, отзыв доступа, ротация ключей, защита от XSS/вредоносных зависимостей или заражённого устройства не реализованы.
-8. `Changed.deleted` — доверенное сообщение сервера, не криптографическое доказательство. Content
-   удаляется из рабочей памяти; удаление master закрывает контекст. Отдельная восстановительная копия
-   после такого уведомления не сохраняется. Если сообщение одновременно содержит обновления известных
-   ресурсов, они проходят проверку до применения удаления. Ошибка в одном из них сохраняет прежний снимок.
+Anyone given the master password and ID can obtain the catalog and its content secrets. The SDK does not implement per-user roles, key revocation, password rotation or recovery of forgotten master credentials.
 
-Ошибка входящего Changed или проверяемого refresh при живом соединении переводит весь контекст
-в needsResync и останавливает выдачу новых записей. Последняя проверенная копия остаётся доступна
-для чтения; она не объявляется актуальной. Успешный refresh снимает блокировку только при разрешённых
-неизвестных исходах. Разрыв оставляет disconnected, close — closed; автоматической записи для исправления нет.
+## Invalid input and integrity failures
 
-ULDA-003, 06.10: после ненамеренного разрыва ранее установленного соединения выполняется ограниченное
-восстановление (по умолчанию 5 попыток / 30 секунд). Состояние проходит reconnecting → проверенный
-refresh → open только при разрешённых неизвестных исходах. Это повтор подключения/чтения, не replay
-записей и не восстановление потерянного ID. Ошибки проверки останавливают серию. Close и намеренный
-disconnect отменяют ожидания; поколение соединения и AbortSignal проверяются до публикации снимка.
-Старые отправки завершаются перед открытием нового сокета; очередные намерения после разрыва
-отклоняются, а не переносятся на новое соединение. Начатое вычисление Web Crypto нельзя гарантированно
-прервать, но его поздний результат после отмены не устанавливается в рабочее состояние.
-Ошибки локальных параметров/BUSY до начала refresh сами по себе состояние не блокируют.
+Incoming records are checked for exact fields, canonical IDs, binary types, size limits and the supported canonical core profile. Binary views preserve their bounds; payloads are copied at protocol boundaries.
 
-Не переносить реальные секреты на тестовый endpoint. Пароль пользователя должен выдерживать офлайн-подбор: зашифрованный master доступен серверу для проверки догадок.
+JSON validation does not invoke getters or custom `toJSON` methods. Cycles, accessors, non-JSON values and custom prototypes are rejected. Own properties such as `__proto__` are handled as data rather than prototype mutations.
 
-## Память и лимиты
+A mixed incoming event is verified before publishing its known resource updates or applying deletions. A failed verification preserves the last verified snapshot and blocks further writes. A read started before a new integrity fault cannot clear that fault.
 
-Web Crypto не предоставляет хранилище произвольного plaintext/origin, скрытое от JavaScript.
-`decrypt()` возвращает ArrayBuffer; `CryptoKey` предназначен для ключей, а `extractable:false` запрещает их export/wrap.
-Секрет ULDA нужен JavaScript-ядру для stepUp/sign, JSON нужен приложению для чтения/редактирования.
-Они остаются в закрытом состоянии SDK в памяти, а `snapshot/get` намеренно отдают копии пользовательских данных приложению.
-Это изоляция API, не защищённая аппаратная память и не защита от кода, захватившего страницу.
-Origin/каталог не добавляются в public snapshot, логи, localStorage или открытые сетевые поля.
-Оборачивать origin в CryptoKey лишь ради хранения не решает задачу: перед работой ядра пришлось бы снова получить его байты.
+The retained snapshot may be stale. A successful explicit refresh can restore normal operation only when pending uncertain operations permit it. The SDK does not repair, delete or recreate a resource automatically in response to a bad packet.
 
-Рабочие byte buffers plaintext/пароля обнуляются в finally; байты KDF — уже после importKey.
-Параметр пароля сбрасывается после запуска KDF, reconnect использует полученный ключ.
-JavaScript-строки, копии runtime и GC не дают гарантии полного стирания; такой гарантии здесь нет.
-Close сразу отменяет ожидания SDK, обнуляет известные owned origin, закрывает очереди и освобождает
-ссылки на контекст до ожидания ACK session.close. Незавершённый Web Crypto может удерживать локальные
-значения до завершения, но не открывает/изменяет закрытый контекст. Ошибки закрытия не означают rollback
-уже отправленного запроса. Старые content Proxy привязаны к ID: повторное имя нового файла не оживляет
-удалённую ссылку. Подробная таблица времён жизни — [SECRET_LIFECYCLE.md](docs/SECRET_LIFECYCLE.md).
-v2 убирает явную роль ресурса и различие random/zero salt из v1. По размерам/времени/группам ID и публичному X/S всё ещё возможны выводы о связях и роли; скрытие этих побочных признаков не реализовано.
-Лимиты: 1 MiB пользовательского JSON на ресурс, глубина 48, 40000 посещённых узлов, 63 content на master, 64 элемента в сетевом массиве, 8 MiB суммарных бинарных witness/payload в сообщении, 8 ожидающих входящих обработок, 128 намерений/ожиданий на соответствующую исходящую очередь. Read с too_large делится на меньшие массивы; атомарная запись не делится. Это прототипные пределы, а не обещание защиты от всех DoS на произвольной странице.
+## Writes and delivery
 
-## Проверки и первоисточники
+Create, Update and Delete use volatile Socket.IO events with an ACK deadline. Volatile delivery is not a transaction guarantee. The database commit and acknowledgement delivery are separate steps.
 
-Синтетические тесты проверяют отсутствие приватных маркеров/полного origin в пакетах, подмены AEAD, формат ядра, конкуренцию, late ACK, потери и восстановление. Независимый криптографический аудит не выполнялся.
-Проверка зависимостей npm audit (включая dev) выполнена 10.10.2026: 0 известных advisory на момент проверки. Это не проверка собственного протокола.
+A missing or malformed success ACK after a write results in `UNKNOWN_OUTCOME`. Never treat that error as proof of rollback or automatically retry the write. A lost Create ACK can leave a resource whose ID the client never learned.
 
-- [Web Crypto, AES-GCM и PBKDF2](https://www.w3.org/TR/WebCryptoAPI/)
-- [OWASP: параметры PBKDF2](https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html#pbkdf2)
-- [Socket.IO: volatile и ACK](https://socket.io/docs/v4/emitting-events/)
-- [Socket.IO: гарантии доставки](https://socket.io/docs/v4/delivery-guarantees/)
-- `node_modules/ulda-core/MANIFEST.md` и `SECURITY.md` — ограничения официального ядра.
+Creating or recovering content reserves a new resource before the separate atomic content/catalog update. Unreferenced encrypted records may remain after failure. [Content recovery](docs/RECOVERY.md) preserves the old resource because other catalogs may still reference it.
 
-## Репозиторий и тестовые логи
+## Client memory and application responsibilities
 
-npm test использует reporter с allowlist результата: файл/строка, pass/fail, счётчики.
-Имена тестов, exception/stack, actual/expected, stdout/stderr и diagnostics не выводятся.
-Отдельный тест проверяет это намеренным отказом с синтетическим секретом.
-Тестовые fixtures используют только loopback и RAM; настоящие секреты из окружения
-не нужны. Ключи/origin генерируются заново; сырые frames хранятся только в памяти тестов.
-Обычный reporter при ручном запуске может раскрыть тестовые значения при отказе.
-Это защита диагностического вывода, не sandbox для вредоносного тестового кода.
+Private fields and non-extractable keys are API boundaries, not isolation from code controlling the page or process. Plaintext and origin bytes must be available to JavaScript while the SDK is using them. XSS, malicious dependencies, debugging access and a compromised operating system can defeat client-side secrecy.
 
-check:secrets проверяет все локальные blob/commit/tag-объекты Git, включая удалённые
-версии файлов и unreachable objects, текущие неигнорируемые файлы и содержимое gzip/tar.
-Исключения ограничены отпечатком и конкретным тестовым файлом. Проверка эвристическая:
-обфускация, неизвестные форматы ключей и смысл произвольных JSON не доказываются.
-Она не читает личные .env вне репозитория и не загружает исходники в сторонний сканер.
+The SDK does not persist secrets in localStorage, IndexedDB or files. It wipes owned temporary byte buffers where possible and releases private state during `close()`. JavaScript strings, garbage collection, native crypto operations and copies held by the application prevent a guarantee of complete memory erasure.
+
+The application is responsible for:
+
+- its trusted endpoint, HTTPS deployment and dependency supply chain;
+- password input, password quality, UI locking and clearing its own references;
+- XSS prevention and control of scripts running in the same context;
+- storing and presenting master IDs;
+- its own copies of decrypted data and any telemetry or crash reports;
+- authorization and abuse controls required beyond the SDK's encrypted storage model.
+
+See [Secret lifecycle](docs/SECRET_LIFECYCLE.md) for allocation and cleanup behavior.
+
+## Resource and diagnostic limits
+
+The SDK bounds JSON sizes, queues, batches and binary reconstruction. See the [manifest](MANIFEST.md) for exact limits. Parser checks do not impose a total memory limit on the browser or Node process: the runtime may have allocated a frame before validation.
+
+SDK diagnostics contain fixed event codes, IDs, counts, sizes and timings. They omit plaintext, content names, credentials, full origins and raw packets. Server error strings are mapped to fixed local errors. IDs and access patterns can still be sensitive metadata; protect application logs accordingly.
+
+The test reporter and local secret scanner reduce accidental disclosure during development. They do not sandbox arbitrary code or prove the absence of all secrets.

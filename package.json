@@ -33,7 +33,7 @@
     "docs/RECOVERY.md",
     "docs/SECRET_LIFECYCLE.md",
     "docs/LICENSING.md",
-    "docs/RELEASE.md"
+    "docs/GUIDE.md"
   ],
   "engines": {
     "node": ">=22"

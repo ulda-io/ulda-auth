@@ -1,401 +1,235 @@
-# Пайплайны методов — ulda-auth 1.0.0
+# Method pipelines
 
-Документ описывает реализованный код, а не идеальный будущий сервер. Названия ниже соответствуют `src/*.js`.
-Серверный договор проверен с основным ULDA Server/PostgreSQL и отдельным fixture. Private-часть выполняется на клиенте.
+These steps describe the implemented client behavior and the required compatible-server actions. See [API](API.md) for signatures and [Protocol](PROTOCOL.md) for exact packets.
 
-## Общие обозначения
+## Shared rules
 
-```text
-подтверждённое состояние = данные + origin + witness + возраст, принятые клиентом
-рабочая ветка S = подготовленные, ещё не все подтверждённые состояния
-зашифровать(состояние) = AES-GCM(data + origin + token), witness включён в AAD
-wire = только ID, witness и ciphertext; ни имя, ни ключ, ни origin открыто не добавляются
-ACK = ответ конкретного запроса; Changed = отдельное уведомление по подписке
-```
+~~~text
+confirmed state = verified data + origin + token + witness + encrypted record + age
+candidate = a prepared next state that has not necessarily received an ACK
+seal(state) = authenticate/encrypt token, full origin and JSON; bind the witness
+wire = IDs, public witnesses and encrypted payloads only
+ACK = the response to one request
+Changed = an independent subscription notification
+~~~
 
-## 1. Конструктор, ready, hello
+Names and secrets are resolved locally. Before each not-yet-sent mutation stage, check session generation, connection and integrity-fault state. Already sent writes retain their ACK or UNKNOWN_OUTCOME; a local fault cannot roll them back.
 
-```text
-проверить настройки и URL; вне тестового loopback требовать HTTPS
-создать отдельный transport, локальные очереди и закрытое состояние
-подписать внутренние обработчики Changed / disconnect / error
-начать подключение одного Socket.IO-клиента
-после connect отправить hello({}) и ждать ACK
-если ACK корректен: ready завершить, status := ready
-если соединение/ACK не удалось: вернуть фиксированную ошибку, не раскрывая ответ сервера
-```
+## Constructor, ready and Hello
 
-Пароля здесь нет. Готовый транспорт ещё не означает открытый master.
+~~~text
+validate endpoint/options
+create or use one transport; create private state and bounded queues
+attach Changed/disconnect/error handlers
+connect Socket.IO -> emit hello({}) -> validate ACK
+if no newer fault occurred: resolve ready, status = ready
+on failure: reject with a fixed local error
+~~~
 
-## 2. Register
+No password or master is involved in Hello.
 
-```text
-дождаться ready; потребовать отсутствие открытого/открываемого master
-занять очередь применения: Changed во время Create дождётся активации
-из пароля и случайного salt получить неэкспортируемый AES-ключ
-создать origin X(age=0), пустой каталог и случайный token master
-получить witness из origin; зашифровать контейнер
-создать закрытый пакет Create([sealed]) и передать транспорту
-сервер создаёт запись, назначает ID и подписывает соединение на него до ACK
-проверить ACK: ровно один корректный ID
-проверить, что экземпляр за время ожидания не закрыли
-назначить полученный ID подготовленному локальному состоянию
-сохранить root, ключ, origin, witness и ciphertext в закрытой памяти SDK
-создать публичное дерево данных; при живом исправном соединении status := open
-вернуть ID строкой; пароль на сервер не отправлялся
-освободить очередь применения; проверить пришедшие за время ожидания Changed
-```
+## register(password)
 
-Read, повторный PBKDF2 и расшифровка своего master здесь отсутствуют. После register можно сразу вызвать add.
-Connect нужен для входа в существующий master на новом экземпляре; на уже открытом возвращается BUSY.
-Потерянный/некорректный ACK записи → UNKNOWN_OUTCOME, без локальной активации и автоматического второго Create.
+~~~text
+await ready; require no open/opening master
+serialize local activation against incoming changes
+derive a non-extractable master key from password + random salt
+create X origin, identity token and empty catalog
+seal the master -> prepare opaque Create handle
+send volatile Create -> server commits, assigns ID and subscribes before ACK
+validate the single returned ID
+if session remains valid: associate that ID with the prepared local state
+publish catalog/key/state; expose the reference tree; return ID
+process queued incoming changes after activation
+~~~
 
-## 3. Connect
+No reread or second KDF is needed. If Create's result is uncertain, do not open a successful context, guess its ID or automatically retry.
 
-```text
-проверить ID, ready и отсутствие уже открытого master
-в общей очереди применения:
-    Read([masterId]) → сервер регистрирует подписку
-    проверить header, шифроконтейнер, получить AES-ключ из пароля/salt
-    расшифровать, проверить token/структуру и sign(origin) == witness
-    потребовать master Mode X
-    проверить каталог ID/имён/ключей/token и уникальность
-    Read([contentId1, contentId2, ...]); при too_large разбить только Read
-    для каждого content получить AES-ключ через HKDF(секрет из каталога, salt контейнера)
-    расшифровать, проверить token и origin/witness
-    только после успеха всех чтений установить root/resources/очереди/data
-    увеличить локальное поколение; status := open; вернуть data
-```
+## connect(id, password)
 
-При ошибке не публикуется половина хранилища; соединение закрывается для очистки созданных подписок. Changed, пришедший во время загрузки, обрабатывается следом.
+~~~text
+await readiness; require no existing/opening context
+Read [master ID]
+validate record -> derive key from password and its salt -> authenticate/decrypt
+check origin/witness, X mode and catalog structure
+extract content IDs, names, secrets and tokens privately
+Read content ID array(s)
+derive keys and verify every required content
+check session/connection/fault guards
+publish master and resources together; build write lanes; return reference tree
+~~~
 
-## 4. Add X / Add S
+Read subscribes to each requested ID. A failure does not expose a partially opened catalog.
 
-```text
-проверить имя, JSON и mode; default X
-поставить намерение в очередь master X
-повторно проверить уникальность имени на текущем каталоге
-если нет сохранённого незавершённого add:
-    сгенерировать ключ, token, origin content выбранного mode
-    seal(data=null, origin) → Create → дождаться ID
-    сохранить ID/ключ/начальное состояние только локально
-взять свежий master, снова проверить имя
-подготовить content age+1 с пользовательскими данными
-подготовить master age+1 с записью ID/имя/ключ/token
-запомнить оба реально отправляемых кандидата для проверки чужих последующих шагов
-отправить Update([sealedContent, sealedMaster])
-сервер проверяет оба witness и фиксирует обе записи или ни одной
-сервер отправляет Changed другим подписанным сокетам, автору — только ACK
-после ACK принять оба состояния без отката более новой входящей версии
-если новый content уже изменён другим клиентом: использовать проверенный входящий снимок
-если новый content уже удалён из последнего каталога: не добавлять его обратно
-Create/Update уже обеспечили подписку до ACK; отдельного Read для подписки нет
-вернуть {ok:true,name,subscriptionReady}
-```
+## add(name, data, mode)
 
-Master остаётся X даже при add S. Create и Update — две отдельные фиксации. При подтверждённом conflict повтор того же add может использовать уже известный ID. При неизвестном Create повтор блокируется. subscriptionReady показывает, живо ли соединение при завершении add; disconnect после commit не отменяет запись.
+~~~text
+validate name/mode/JSON; serialize catalog work; require unused name and capacity
+generate independent content secret, token, salt and origin
+seal null data -> Create encrypted reservation -> remember ACK ID
+prepare next content state with application JSON
+copy master catalog; add the private ID/name/key/token entry
+advance master chain and encrypt the new catalog
+check guards -> one Update [content, master]
+server validates both and commits both or neither; ensures subscriptions; ACKs
+after ACK, publish prepared states without replacing a newer verified state
+discard completed reservation state; return name and current subscriptionReady
+~~~
 
-## 5. Update X
+The reservation and Update are separate commits. A failed operation can leave a resource. A known reservation can be retained for a matching explicit continuation; an unknown Create ID is not recovered automatically.
 
-```text
-проверить открытое состояние; перевести имя в ID локально
-скопировать JSON/путь, поставить намерение в очередь этого ID
-дождаться отсутствия неразрешённой попытки X
-взять подтверждённое состояние и применить намерение к копии данных
-nextOrigin := core.stepUp(origin)
-nextWitness := core.sign(nextOrigin)
-seal(новые данные, nextOrigin), AAD включает nextWitness
-Update([{id,witness,payload}]) → ожидать ACK
-успех: последовательно принять кандидата, завершить Promise, разрешить следующий шаг
-conflict: остановить очередь; приложение делает refresh и повторяет намерение
-timeout/disconnect: UNKNOWN_OUTCOME; не строить новый шаг или новую ветку вслепую
-```
+## update, set and remove
 
-На сервер не идут ни baseWitness, ни имя, ни путь поля.
+~~~text
+resolve content name to ID; require a writable context
+copy input and path; enqueue an intention in that resource's write lane
+apply intention to a copy of the lane's current data
+advance origin -> produce next witness -> encrypt complete resource
+check guards -> send Update [candidate]
+server atomically validates/replaces witness + payload and ACKs
+on ACK: verify/apply the candidate unless a newer valid state is already present
+resolve this operation's promise
+on uncertain result: retain required candidate information and block unsafe writes
+~~~
 
-## 6. Update S
+`update` replaces the root. `set` replaces a node. `remove` deletes an object field or splices an array element. None sends a plaintext patch: the changed resource is re-encrypted in full.
 
-```text
-поставить намерение в очередь ID
-пока есть намерение и следующийAge - подтверждённыйAge < 5:
-    последовательно применить его к рабочей ветке
-    продвинуть origin, вычислить witness, зашифровать полный новый снимок
-    отправить Update; ждать его ACK отдельно от подготовки следующего
-при успехе ACK:
-    принять кандидат, если он не старее подтверждённого снимка
-    сдвинуть подтверждённое основание окна
-    завершить именно этот Promise; разрешить новые возраста
-при позднем ACK старого возраста: не откатывать данные
-при unknown/conflict/чужой ветке: остановить выдачу, завершить затронутые ожидания ошибкой
-```
+### X and S lanes
 
-При подтверждённом age=1 разрешены 2–5, age=6 ждёт. Потерянный age=2 не мешает серверу принять 3 в пределах gap; но отсутствие ACK 2 остаётся неизвестным исходом того запроса.
+~~~text
+X: wait for the pending ACK before preparing/sending the next write
+S: prepare consecutive states within the N=5 unconfirmed window
+every write has its own ACK/promise
+a foreign branch or failure can stop the lane and reject queued intentions
+refresh can reopen the lane only when its uncertain-state checks permit it
+~~~
 
-## 7. Вложенный Update и полная замена
+S does not merge concurrent writers or turn several updates into one transaction.
 
-```text
-Proxy.update(value) → resourceId + путь + отделённая копия value
-если путь пуст: заменить весь JSON content
-иначе: найти родителя по собственным свойствам JSON и заменить выбранный узел
-для массива проверить существующий неотрицательный целый индекс
-использовать общий Update X/S для целого зашифрованного content
-```
+## snapshot, value and references
 
-Это замена, не merge. Автоматический повтор индекса массива после чужого удаления не выполняется.
+~~~text
+require an available open-catalog context
+snapshot: copy each currently available content JSON under its local name
+value: locate content and requested path; return an independent JSON copy
+ref/data: capture content identity and session generation, not catalog secrets
+reference.get/toJSON -> local value read
+reference.update -> set
+reference.delete -> remove, or delete at content root
+reference.field -> create another reference for a child path
+~~~
 
-## 8. Вложенный Delete
+There is no socket request. Direct Proxy assignment/deletion is rejected. Identity/generation guards invalidate references after replacement or close.
 
-```text
-Proxy.delete() с непустым путём → намерение удалить значение
-в объекте удалить собственное поле
-в массиве сделать splice, сдвигающий последующие элементы
-передать новый полный JSON в Update X/S
-```
+## delete(name)
 
-Сокетный Delete здесь не используется.
+~~~text
+require no conflicting local work; acquire exclusive operation guard
+refresh and verify master/content
+resolve target from refreshed catalog
+prepare next-witness deletion proof for content
+remove its catalog entry; advance/encrypt master
+check guards -> one Delete [content proof, encrypted master replacement]
+server verifies every entry and commits all or none
+on ACK: remove local resource/lane and accept catalog without rolling back newer state
+on uncertain outcome: preserve uncertainty and block unsafe writes
+~~~
 
-## 9. Физический Delete одного content
+Refresh does not lock the server. A concurrent writer can still cause conflict at commit.
 
-```text
-delete(name) / delete корня Proxy
-потребовать открытый клиент без выполняющихся записей
-занять исключительный режим; refresh master/content
-найти content в проверенном каталоге
-создать proof удаления = sign(stepUp(content.origin))
-сделать копию master и убрать запись с ID content
-продвинуть цепочку master и зашифровать изменённый каталог
-отправить один Delete([contentProof, encryptedMasterUpdate])
-сервер сначала проверяет все witness; затем удаляет content и обновляет master вместе
-после ACK применить master локально, закрыть очередь content, убрать его из памяти
-при ошибке не объявлять успех; при UNKNOWN_OUTCOME не повторять автоматически
-refresh снимает неопределённость только при достаточно продвинутом master
-освободить исключительный режим
-```
+## superDelete()
 
-Пакет Delete: элемент Delete с payload — обновление, без payload — удаление.
-Контракт реализован и проверен с основным сервером. Физическое удаление общего content затрагивает других потребителей;
-другие master сервер не расшифровывает и их ссылки самостоятельно не исправляет.
+~~~text
+acquire exclusive guard -> refresh all listed resources
+prepare a next-witness deletion proof for each content and the master
+check guards -> one Delete batch
+server validates and deletes all or none
+on valid ACK: close SDK and release the context
+~~~
 
-## 10. SuperDelete
+A missing or invalid required resource stops preflight. The method cannot discover records absent from the encrypted catalog.
 
-```text
-потребовать отсутствие текущих записей и занять исключительный режим
-refresh master и всех content
-для каждого content и затем master:
-    создать непрозрачное доказательство sign(stepUp(origin))
-Delete([contentProofs..., masterProof]) одним массивом
-сервер проверяет все переходы и удаляет всё одной транзакцией
-после ACK закрыть экземпляр
-при определённой ошибке не объявлять удаление успешным
-при неизвестном исходе блокировать новые записи
-```
+## Incoming Changed
 
-Физически исчезают и общие для других master ресурсы. Уже отсутствующий content останавливает метод на refresh; исправление битых ссылок ещё не реализовано.
+~~~text
+validate event shape and limits -> enqueue in the bounded incoming sequence
+stage known resource updates; authenticate/decrypt and verify lineage
+if master changed: validate its catalog and resolve newly referenced content by Read
+keep a pending Add's verified new-content state private until local activation
+check the complete required staged set before publication
+then apply trusted deletions and accepted updates
+close the context if the master was deleted
+update lanes/references; emit safe change metadata
+~~~
 
-## 11. Transport.send
+Invalid known updates reject a mixed event before its deletions are applied. Unknown resources are not published without credentials.
 
-```text
-потребовать внутренний packet handle; произвольный объект не принимать
-получить безопасную копию body, проверить схему/лимиты
-потребовать живое соединение; назначить deadline ACK
-выбрать ulda:event; для Create/Update/Delete установить volatile
-emit(event, body, callback)
-в callback проверить поколение соединения и структуру ACK
-для read/create извлечь данные; для остальных принять {ok:true}
-неизвестный/некорректный ответ изменяющей операции → UNKNOWN_OUTCOME
-ошибка сервера → фиксированный локальный код без копирования произвольного текста
-```
+When a foreign update precedes an ACK, bridge only through exact candidates the SDK actually sent, checking each permitted transition. Receiving Changed never substitutes for a missing ACK.
 
-Транспорт не получает пароль, origin, plaintext JSON или ключи.
+## refresh()
 
-## 12. Parser и криптографическое открытие
+~~~text
+require an open catalog and no conflicting active local writes
+record session/connection/fault generation
+Read master -> authenticate and check identity/mode/age
+Read every referenced content -> authenticate and check against known anchors
+accept a newer authenticated snapshot without requiring missed intermediate steps
+if any required record or guard fails: retain previous verified snapshot
+otherwise replace the staged set, synchronize lanes and rebuild Read subscriptions
+resolve uncertainty only where the observed state permits it
+status = open, or needsResync when an unresolved operation remains
+return reference tree
+~~~
 
-```text
-проверить точный набор полей, типы, ID, дубликаты, размеры
-принять только бинарные Buffer/Uint8Array/ArrayBuffer, проверить длины и canonical compactV1
-проверить поддерживаемый профиль до использования core
-проверить magic/общую версию v2/размер шифроконтейнера; роли ресурса в header нет
-AES-GCM.decrypt с ожидаемыми header и witness в AAD
-проверить private token и структуру расшифрованного JSON
-проверить origin: core.sign(origin) == полученный witness
-только после всех проверок вернуть внутреннее состояние
-при ошибке не заменять ранее подтверждённые данные
-```
+Refresh sends no mutation and does not advance any chain. Its success does not turn a previously rejected write promise into success.
 
-## 13. Changed content / master / deleted
+## Disconnect and reconnect
 
-```text
-проверить сообщение и поставить в ограниченную очередь применения
-запомнить признак удаления root; пока ничего не удалять
-если обновлён master:
-    расшифровать и проверить его X-переход
-    проверить каталог; неподдержанную замену ключа существующего ID отклонить
-для обновлённых content проверить ключ/token/контейнер/связь witness
-если content ещё находится в незавершённом add: сохранить его проверенный снимок приватно до ACK add
-после проверки обновлений известных ресурсов: если root удалён, закрыть контекст
-новые ID из master прочитать массивом для данных и подписки
-после проверки всего подготовленного набора установить состояния
-удалённые/убранные ID исключить из публичного дерева, остановить их очереди
-не дублировать своё изменение и не отправлять его обратно
-уведомить приложение только ID/типом изменения
-```
-
-Договор 06.10.2026: сообщению deleted доверяем как решению сервера. Proof удаления и резервная копия
-удалённого ресурса в этом пути не предусмотрены. Смешанное сообщение с повреждённым updated
-отклоняется до удаления даже при наличии master ID в deleted. Неизвестные SDK ресурсы не открываются
-без ключа; их данные не устанавливаются. Исправление оставшейся ссылки в другом master — задача 005.
-
-Сервер не возвращает автору его собственные Update/Delete; локальное применение выполняется по ACK.
-Старый снимок не откатывает новый; другой ciphertext/witness того же возраста отклоняется.
-Если чужой Changed опередил наш ACK, SDK может проверить путь через собственные подготовленные и уже
-отправленные промежуточные кандидаты. Каждое ребро проверяется обычным core.verify; неизвестный пропуск X
-по-прежнему требует refresh. Принятые/устаревшие кандидаты освобождаются. При неизвестном исходе нужный
-кандидат остаётся до разрешающего refresh/следующего подтверждённого состояния/close.
-Проверенный чужой снимок не подменяет ACK нашей команды: её Promise при потере ACK завершается UNKNOWN_OUTCOME.
-
-## 14. Conflict и refresh
-
-`refresh()` заново читает master и content, проверяет полученные файлы и только после успешной
-проверки всего набора заменяет локальное рабочее состояние. Сам метод не делает Create/Update/Delete
-и не продвигает цепочки. Это также восстанавливает серверные подписки через Read.
-Текущий Delete/SuperDelete вызывает его, чтобы перечитать каталог и состояния перед удалением.
-Такое чтение не блокирует других клиентов: окончательная проверка актуальности и атомарность
-изменяющей команды всё равно лежат на сервере. Полное перечитывание перед каждым удалением —
-выбор текущего SDK, не обязательное свойство ULDA.
-
-```text
-conflict завершает конкретную попытку ошибкой и останавливает дальнейшую ветку
-приложение вызывает refresh при отсутствии ещё ожидающих попыток
-Read master → проверить возраст не меньше уже принятого и AEAD/token
-Read content → проверить все контейнеры и нижние границы возраста
-принять новый доверенный снимок, обновить очереди и подписки
-если age достиг неизвестного отправленного кандидата, старая попытка уже не может продвинуть сервер назад
-    разрешить новые записи
-иначе сохранить NEEDS_RESYNC
-после этого приложение явно повторяет осмысленное намерение
-```
-
-Большой gap при refresh принимается на основании доверия текущему аутентифицированному снимку;
-это согласованная 06.10 модель 1.0, не проверенная непрерывная история. Новый вход без локальной
-истории проверяет контейнер, но не доказывает его свежесть независимо от сервера. Неизвестный Create
-с потерянным ID этим не восстанавливается.
-
-При ошибке проверки или not_found внутри refresh не устанавливать часть набора, сохранить прошлую
-копию и при живом соединении перейти в needsResync, остановить новые записи всех ресурсов,
-сообщить status/error и отклонить Promise безопасным кодом. При потере соединения сохранить
-disconnected; при close сохранить closed. Успешный refresh сообщает новый статус и снимает блокировку
-только при разрешении неизвестных исходов. Вызов с BUSY до начала чтения не меняет статус.
-
-Диагностика 06.10: master.opened/content.opened означают успешное открытие контейнера;
-chain.checked — проверку связи с прошлым через core.verify; snapshot.checked — проверки
-режима/token/возраста при fresh-перечитывании без доказательства пропущенных переходов.
-Равный возраст с теми же байтами принимается без нового продвижения цепочки.
-
-## 15. Disconnect / reconnect
-
-```text
+~~~text
 disconnect:
-    пометить transport disconnected, изменить поколение сетевых ожиданий
-    отклонить отправленные изменяющие запросы как UNKNOWN_OUTCOME
-    остановить выдачу новых записей; оставить уже загруженный снимок для чтения
-    отбросить Changed старого соединения, ещё ожидающие обработки
-    если отключение намеренное: отменить серию, не запускать новую
-    иначе, если hello уже хотя бы раз прошёл и автоматика включена: начать серию
-reconnect() по явному вызову приложения:
-    если серия уже есть: вернуть тот же Promise
-    иначе: блокировать новые записи и начать ручную серию
-одна серия (SDK владеет повторами, Socket.IO reconnection/retries выключены):
-    создать AbortController и общий deadline (по умолчанию 30 секунд)
-    до 5 попыток:
-        ограниченная экспоненциальная задержка с jitter; у ручной первой — без неё
-        дождаться завершения старых inbound/master/WriteLane/Delete операций
-        проверить, что серия не отменена и SDK не закрыт
-        status = reconnecting; открыть сокет; hello
-        если master открыт: проверенный refresh всех нужных ресурсов
-        подписки возникают через Read, старый session/watch не восстанавливается
-        до публикации снимка проверить поколение соединения и AbortSignal
-        если неизвестные исходы разрешены: open (или ready без master), успех
-        OFFLINE/TIMEOUT/BUSY: следующая попытка в пределах общего бюджета
-        ошибка целостности, NOT_FOUND или неразрешённый исход: остановиться
-    по исчерпанию: stopped, disconnected или needsResync; возможен новый ручной вызов
-close:
-    отменить таймеры и ожидания; поздние ACK/расшифровка не открывают контекст
-```
+    advance connection generation; stop new writes and reject queued intentions
+    sent writes without a definite ACK become uncertain
+    retain verified application state for local reads
+    ignore queued events from the previous connection
+    if unintentional and a connection was previously established: start bounded recovery
 
-Офлайн-запись и replay отсутствуют. Потерянный ACK не превращается в успешный ответ операции,
-даже если последующий Read обнаружил её результат. Первоначальный отказ ready не запускает
-автоматику. Настройки, диапазоны и события описаны в README. После отмены встроенный Web Crypto
-может закончить уже начатое вычисление, но результат не публикуется.
+recovery cycle:
+    one shared cycle for concurrent callers
+    bounded attempts, exponential delay/jitter and a total deadline
+    wait for old local operations to settle
+    connect -> Hello -> verified refresh if a master exists
+    recheck cancellation/session/connection guards before publication
+    success: open, or ready if no catalog
+    retry transport/time/BUSY errors within budget
+    stop on invalid data, missing required state or unresolved uncertainty
+~~~
 
-## 16. Close
+Manual reconnect joins this mechanism. There is no persistent offline queue or mutation replay. Close cancels the cycle. Native Web Crypto work may complete later, but guarded results cannot reopen a closed session.
 
-```text
-пометить SDK закрытым, увеличить поколение, сделать старые Proxy недействительными
-отменить recovery и ожидания transport через AbortSignal
-снять обработчики transport, остановить очереди и отклонить их ожидания
-затереть известные собственные буферы origin; освободить ссылки на root и ключи
-очистить content, отправленные кандидаты и незавершённые add; сообщить session.clear
-если сокет жив: session.close с ограниченным ожиданием ACK
-в любом исходе закрыть transport, убрать обработчики/таймеры
-сообщить closed и освободить слушатели SDK; reconnect не запускать
-```
+## recoverContent(name)
 
-Уже отправленная запись могла сохраниться. Close не обещает отмену этой записи или гарантированное физическое стирание памяти JavaScript.
-Начатый Web Crypto может закончить вычисление, но проверка поколения не даст опубликовать поздний результат.
-Ссылки на контекст освобождаются до ожидания сетевого ACK. Подробности — [SECRET_LIFECYCLE.md](SECRET_LIFECYCLE.md).
+~~~text
+require confirmed local source and no conflicting work
+retain one private plan: source data/mode/age, old identity, new credentials
+Read and verify master plus other required contents
+ensure the master still points to the original resource
+create encrypted empty replacement -> remember its assigned ID
+prepare replacement data and master with one substituted catalog entry
+one atomic Update [replacement, master] -> validate ACK -> publish the full set
+preserve old server record; invalidate its local reference; return recovery metadata
+~~~
 
-## 17. Чтение через Proxy и чистые снимки
+A repeated explicit call uses the same plan and known reservation. An uncertain Update is resolved by reads only; an unknown Create ID blocks continuation. The detailed cases are in [Recovery](RECOVERY.md).
 
-```text
-data / ref(name) возвращает ссылку с привязкой к поколению экземпляра и ID ресурса
-удаление ресурса делает ссылку недействительной, даже если затем создан content с тем же именем
-доступ по свойству добавляет сегмент пути; ничего не отправляет
-.get() читает актуальные данные по пути и возвращает независимую JSON-копию
-.field(key) выбирает пользовательский ключ с именем update/delete/get/then/toJSON
-snapshot() собирает только пользовательские JSON по именам content
-служебные ключи master, origin, witness и transport сюда не входят
-```
+## close()
 
-Обёртка над false сама truthy; приложение должно читать `.get()`. Методы не добавляются в глобальные прототипы.
+~~~text
+mark closed and advance session generation
+cancel reconnect and SDK transport waits
+detach transport handlers; close lanes and invalidate references
+wipe known owned origin buffers; release catalog/keys/resources/candidates/plans
+if connected: attempt bounded session.close ACK
+close transport and clear listeners
+~~~
 
-## 18. Подготовка защищённого пакета
-
-```text
-generate: криптографически случайные origin, секрет content, salt и token — независимо
-master key: PBKDF2(пароль, salt); content key: HKDF(секрет, salt)
-роль выбирает клиент по собственному контексту, серверу она не отправляется
-advance: core.stepUp по выбранному X/S экземпляру, без изменения старого origin
-sign: core.sign(nextOrigin), проверить фиксированный профиль
-seal:
-    сериализовать private JSON(data + origin + token)
-    взять новый случайный nonce
-    AES-GCM.encrypt с domain/header/witness в AAD
-    вернуть непрозрачный handle ciphertext, не plaintext
-delete proof:
-    sign(stepUp(origin)), вернуть другой непрозрачный handle
-сборщик wire принимает только соответствующие handles
-```
-
-Параметры контейнера и границы безопасности описаны в README и SECURITY; ограничения приёмки — в RELEASE.
-
-## 19. Явное пересоздание content — recoverContent(name)
-
-```text
-проверить открытую проверенную копию и отсутствие активных/неизвестных записей
-зафиксировать источник в одном приватном плане, остановить новые локальные записи
-Read master → все проверки → исходная ссылка должна совпадать
-проверить остальные content; целевой повреждённый файл не использовать как источник
-создать новые ключ/token/origin → seal пустого content → Create → ACK ID
-сохранить ID в плане → подготовить content с копией + новый master с заменённой ссылкой
-один атомарный Update [новый content, master] → ACK → применить весь набор
-старый ID остаётся на сервере; его ref недействительны; вернуть previousId/id/sourceAge
-повторный вызов:
-    неизвестный Create ID → UNKNOWN_OUTCOME без нового запроса
-    известный резервный ID + подтверждённый отказ Update → проверить запись, использовать тот же ID
-    неизвестный Update → только проверенные Read; новая ссылка подтверждена → reconciled:true
-    старый Read не доказывает окончательный отказ Update → UNKNOWN_OUTCOME, без replay
-close → отменить ожидания, освободить план/секреты; поздний ACK не открывает контекст
-```
-
-При отсутствии источника — NOT_FOUND без Create. Повреждённый master не пересоздаётся этим методом.
-Полные исходы, shared content и возможная устарелость копии — [RECOVERY.md](RECOVERY.md).
+Cleanup does not wait for the server to cooperate. It does not erase application-owned copies, reverse commits or guarantee erasure of every JavaScript/runtime allocation.

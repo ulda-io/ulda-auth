@@ -1,57 +1,50 @@
-# Жизненный цикл секретов SDK
+# Secret lifecycle
 
-Обновлено 06.10.2026, ULDA-006. Это описание фактической границы JS SDK, не обещание
-защиты от вируса, XSS, подменённой зависимости или кода с полным доступом к странице.
+This document describes where SDK values live and when they are released. Private fields and Web Crypto key settings limit accidental API exposure; they do not protect against hostile code controlling the same page or process.
 
-| Значение | Где и сколько живёт | Освобождение |
+## Values in memory
+
+| Value | Storage and lifetime | Cleanup |
 |---|---|---|
-| Пароль пользователя | Аргумент register/connect; при connect нужен до чтения salt. В поля SDK не записывается | Ссылка параметра сбрасывается сразу после запуска KDF и при завершении вызова. Внутренние байты пароля обнуляются после importKey и также в finally при ошибке |
-| Материал PBKDF2/HKDF | Локальный неэкспортируемый CryptoKey на время получения AES-ключа | Ссылка отпускается при завершении KDF; внутренними копиями управляет Web Crypto |
-| AES CryptoKey master/content | Приватный контекст/ресурс и его очередь | Повторно используется при refresh/reconnect. Close освобождает поля и callbacks очередей до ожидания сервера. API не отдаёт ключ; exportKey/wrapKey запрещены флагом extractable:false |
-| Origin | Приватное рабочее состояние, временный кандидат, состояние очереди | После замены/подтверждения ненужные ссылки отпускаются; на close обнуляются известные SDK origin в root/resources/candidates/pending add. Не каждый промежуточный массив ядра доступен SDK |
-| Каталог master | Приватный объект с ID/именами/ключами/token content | Не выдаётся snapshot. На close ссылка и карты очищаются сразу; JS-строки нельзя надёжно затереть |
-| Временный plaintext AES | Управляемый Uint8Array шифрования/ArrayBuffer расшифровки | Обнуление в finally и при отказе проверки. Временные строки JSON и копии runtime не могут быть гарантированно стёрты |
-| Намерение записи/кандидат | Очередь конкретного ресурса; известные отправленные кандидаты для проверки перехода | ACK/ошибка освобождают завершённую работу. UNKNOWN_OUTCOME может удерживать кандидат до разрешения снимком/close; это требуется для проверки цепочки |
-| Данные приложения | Приватное состояние SDK; независимые копии из snapshot/value/get | SDK очищает свои ссылки, но не может отозвать или стереть копию, уже выданную приложению |
-| Обработчики | Наборы подписчиков SDK и транспорта | Close снимает SDK-подписки транспорта и очищает наборы callback; новые подписки на закрытый SDK отклоняются |
-| Явное пересоздание content | Один приватный план: подтверждённая копия, новые секреты и origin, резервный ID и кандидаты | После ошибки сохраняется для явного продолжения без повторного Create. Успех/close освобождают план и обнуляют известные origin, кроме уже принятого рабочего состояния; не пишется на диск |
+| Master password | register/connect argument; connect needs it until the salt is read | Parameter reference is released after KDF starts; internal password bytes are wiped after importKey and on failure |
+| PBKDF2/HKDF material | Local non-extractable CryptoKey during derivation | References released after derivation; native copies belong to Web Crypto |
+| Master/content AES keys | Private resource context and write lanes | Reused for refresh/reconnect; close releases SDK references; exportKey/wrapKey are disallowed |
+| Full origin | Private confirmed state, candidate and write-lane state | Unneeded references released; close wipes known owned root/resource/candidate/pending origins |
+| Master catalog | Private IDs, names, content secrets and tokens | Never returned as a public snapshot; references/maps released at close |
+| Temporary plaintext bytes | Owned encryption/decryption buffers | Wiped in cleanup paths, including verification failure |
+| Write intention and candidate | Bounded per-resource queue and sent-candidate tracking | Completed work released; uncertain candidates may remain until reconciliation or close |
+| Application JSON | Verified SDK state and copies returned to the application | SDK releases its own state; it cannot erase copies already handed to the application |
+| Event listeners | SDK and transport callback sets | Close detaches SDK transport handlers and clears listeners |
+| Recovery plan | Private confirmed source, replacement secrets, reservation and candidates | Retained for explicit continuation; released on success or close |
 
-## Close по шагам
+Content secrets remain in the decrypted private catalog as encoded strings so content keys can be derived. No raw-secret accessor is provided. That does not make these strings inaccessible to a debugger or compromised runtime.
 
-1. Синхронно поставить closed и изменить поколение контекста.
-2. Отменить reconnect и ожидающие сетевые операции SDK. Уже отправленная запись может быть
-   зафиксирована; её неопределённый исход не превращается в отмену на сервере.
-3. Снять обработчики SDK с транспорта. Обнулить известные приватные origin и закрыть очереди,
-   включая намерение, которое ещё только шифруется. Очистить ссылки на каталог/ключи/ресурсы/
-   кандидаты/pending add/дерево данных. В диагностике — session.clear.
-4. При живом соединении попробовать session.close с ограниченным ожиданием ACK. Для этого уже
-   не нужны секреты. Неверный/потерянный ACK не возвращает контекст.
-5. Закрыть транспорт, сообщить session.closed/status=closed и очистить наборы слушателей.
+The SDK does not write secrets to localStorage, IndexedDB or files. It does not add the full origin, catalog secrets or plaintext to its diagnostic summaries.
 
-Web Crypto не предоставляет отмену уже запущенного вычисления: оно может завершиться после close.
-Guard/AbortSignal предотвращают дальнейшую обработку/отправку/публикацию результата. Необходимые
-локальные ссылки незавершённого вычисления могут жить до его завершения; полная мгновенная очистка
-всей памяти процесса не обещается. Сырые ошибки crypto не используются как содержимое сетевых логов.
+## Close sequence
 
-## Ссылки и ошибки
+1. Mark the SDK closed and change the session generation so old references become invalid.
+2. Cancel reconnect and SDK network waits.
+3. Detach transport callbacks, close queues, wipe known owned origin buffers and release catalog, keys, resources, candidates and recovery state.
+4. If connected, attempt a bounded session.close acknowledgement.
+5. Close the transport and clear listeners.
 
-- Старый Proxy и заранее сохранённые get/update/delete после close не дают доступа к данным.
-- Ссылка content привязана к ID и поколению, а не только к имени. После Delete + Add с тем же
-  именем старая ссылка даёт STALE_REFERENCE; нужна новая ref/data.field.
-- Поздний отказ Add/Delete/SuperDelete не меняет closed на needsResync.
-- Ошибка входа не устанавливает частично открытый контекст. Повторный явный вход получает новый
-  ключ из заново переданного пароля. Офлайн сам по себе не стирает проверенный рабочий контекст.
-- Приложение управляет password input, сохранением пароля/ID, экраном блокировки и своими копиями
-  JSON. SDK не пишет их в localStorage/IndexedDB или файлы.
+Cleanup begins before waiting for the server. Lost or invalid close ACKs cannot restore the context. A previously sent write can still commit; closing is not a server rollback.
 
-## Что подтверждается проверками
+Web Crypto does not provide cancellation of already started cryptographic work. Such work can retain local values until it finishes. Guards prevent its late result from publishing or sending a new stage after the session has closed.
 
-Тесты наблюдают **синтетические** параметры вызовов Web Crypto: управляемые byte buffers обнулены
-после успеха/ошибки, экспорт и wrap AES-ключа отклонены, повторный PBKDF2 при refresh/reconnect
-отсутствует. Проверены close во время KDF/шифрования/ожидания ACK, ошибки открытия, публичные
-снимки/trace и повторное использование имени удалённого content. Это не анализ heap браузера,
-не доказательство работы GC и не гарантия стирания всех копий runtime.
+## Reference behavior
 
-[W3C Web Crypto: security considerations](https://www.w3.org/TR/2017/REC-WebCryptoAPI-20170126/#security-considerations)
-описывает границу между API, приложением и окружением; extractable:false не изолирует приложение
-от враждебного кода, имеющего те же полномочия. Профиль и остальная модель угроз — [SECURITY](../SECURITY.md).
+A content reference captures its resource identity and context generation. After deletion/replacement, adding another content with the same name does not revive it. Previously saved get/update/delete functions still perform the guard checks.
+
+A failed open does not expose a partially initialized context. A later explicit login derives credentials from the newly supplied password. Being offline does not itself erase an already verified snapshot.
+
+## Application responsibilities
+
+The application owns password inputs, any saved credentials/IDs, lock-screen policy, plaintext copies and its logging/telemetry. Call close when the session should end and release application references that are no longer needed.
+
+Non-extractable CryptoKey prevents normal key export. It does not stop hostile same-context code from intercepting input, using available crypto operations or observing plaintext.
+
+JavaScript strings are immutable, garbage collection is nondeterministic, and the core/runtime may allocate intermediate copies outside SDK ownership. Wiping an owned byte buffer does not prove complete erasure of all related data.
+
+See [Security](../SECURITY.md) for the trust model and [Web Crypto security considerations](https://www.w3.org/TR/2017/REC-WebCryptoAPI-20170126/#security-considerations) for the API's runtime boundary.

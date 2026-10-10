@@ -1,110 +1,100 @@
-# ULDA Library Manifest
+# ULDA Auth Manifest
 
-Revision: 2026-10-10. Package: `ulda-auth@1.0.0`, prepared release, not yet published.
-Target: 1.0.0 after the remaining release checks. This document describes the SDK's current
-implementation; it does not declare the package or the main backend production-ready.
+This manifest defines the SDK's architecture, data model and supported contract. Usage examples are in the [guide](docs/GUIDE.md); security assumptions are in [SECURITY.md](SECURITY.md).
 
-## Purpose and boundaries
+## Purpose
 
-ULDA Library is a JavaScript client SDK for encrypted JSON resources, an encrypted catalog,
-per-resource ULDA state, local write queues, and Socket.IO transport. It uses the separately
-licensed, pinned `ulda-core@1.0.1` npm dependency; it does not replace or modify the core.
+ULDA Auth is a JavaScript client SDK for encrypted JSON resources. It manages an encrypted catalog, a separate ULDA chain per resource, client-side encryption, write queues, transport, change delivery and connection recovery.
 
-The application supplies its server endpoint and the user's master ID/password. The SDK does not
-provide user identity, account permissions, login aliases, a production storage server, automatic
-repair/recreation of missing files, offline write replay, or protection from a compromised runtime.
+It uses the separately licensed `ulda-core@1.0.1`. The application supplies its endpoint, master ID and password. The storage server, account UI and application authorization are separate components.
 
-## Resources and cryptography
+## Components
 
-- Server records contain only `id`, `witness`, `payload`. No public master/content discriminator.
-- Master is a locally interpreted catalog, always X, containing content IDs, names, keys and tokens.
-  Each content has its own chain and key; mode X is default and S is explicit.
-- Profile: compactV1, SHA-256, N=5, 256-bit origin blocks. Per-resource age is bounded by uint32.
-- AES-256-GCM with a fresh random 96-bit nonce and 128-bit tag. Master key: PBKDF2-SHA-256,
-  600000 iterations, random 16-byte salt. Content key: HKDF-SHA-256 from an independent random
-  256-bit secret and random 16-byte salt. Derived CryptoKeys are non-extractable.
-- Container v2 encrypts JSON, full origin and resource token. AAD binds the container header and
-  full public witness; clients check `sign(origin) == witness`. A wire handle is produced only
-  after successful encryption. Ciphertext and witness travel as binary attachments.
-- ID, witness, salt, nonce, ciphertext length and traffic relationships are visible to the server.
-  Ordinary strings/JSON in JS memory are not hardware-isolated or guaranteed to be securely erased.
+| Component | Responsibility |
+|---|---|
+| Client | Catalog, resource lifecycle, validated local state and event delivery |
+| Crypto | Password/content key derivation and authenticated encryption |
+| Core adapter | Supported ULDA profile, origin creation, chain advancement and witness verification |
+| Protocol | Exact packet shapes, size validation and opaque outgoing handles |
+| Transport | One Socket.IO WebSocket connection, ACKs and incoming encrypted records |
+| Queues | Per-resource X/S writes and serialized catalog operations |
+| Reconnect | Bounded connection/Hello/read retries, without write replay |
+| References | Explicit access to application JSON through get/update/delete |
 
-Details: [SECURITY.md](SECURITY.md), [PROTOCOL.md](docs/PROTOCOL.md).
+`src/` contains the JavaScript implementation. `dist/ulda-library.js` is the generated standalone ESM bundle. `types/index.d.ts` describes the same API for editors and TypeScript; it is not another runtime implementation.
 
-## Public API and state
+## Resource model
 
-Exports: `Ulda`, `SocketIoTransport`, `UldaError`.
+A master is an encrypted catalog containing content IDs, names, secrets and identity tokens. It always uses X. Content stores application JSON and uses X by default, or S when chosen at creation.
 
-`register`, `connect`, `add`, `update`, `set`, `remove`, `delete`, `superDelete`, `refresh`,
-`reconnect`, `recoverContent`, `close`, `snapshot`, `value`, `ref`, `data`, `ready`, `status`, and `on` form the
-current SDK surface. Nested references provide `get/update/delete/field/toJSON`; they are bound
-to their original content ID and context, not only to a reusable name. Public snapshots are
-independent copies of application JSON and contain no internal catalog keys or origin.
+A server record contains only `id`, `witness` and encrypted `payload`. It has no explicit master/content role or parent field. The client interprets its decrypted catalog; the server can still observe access patterns and public witness metadata.
 
-Statuses: connecting, ready, open, disconnected, reconnecting, needsResync, closed.
-Events: change, status, error, trace, reconnect. Diagnostic records contain fixed codes,
-identifiers, counts and timings, not private contents or raw packets.
+Public snapshots expose application JSON, not internal catalog credentials or origins.
 
-`close()` invalidates references, aborts SDK waits, wipes known owned origin buffers and releases
-the working catalog/keys/queues before waiting for the best-effort session.close ACK. It does not
-undo an already committed server write or erase copies already obtained by the application.
-See [the lifecycle contract](docs/SECRET_LIFECYCLE.md).
+## Supported profile
 
-## Transport, concurrency and recovery
+| Property | Value |
+|---|---|
+| Core format | canonical compactV1 |
+| Core hash | SHA-256 |
+| Chain width | N=5 |
+| Origin block size | 256 bits |
+| Modes | X and S |
+| Age | uint32; advancing past the maximum is rejected |
+| Payload container | SDK version 2 |
+| Encryption | AES-256-GCM, 96-bit nonce, 128-bit tag |
+| Master KDF | PBKDF2-HMAC-SHA-256, 600000 iterations, 16-byte salt |
+| Content KDF | HKDF-SHA-256, independent 32-byte secret, 16-byte salt |
+| AES key export | Disabled |
 
-One Socket.IO connection per SDK; `ulda:hello/read/create/update/delete/session.close` use ACKs,
-and `ulda:changed` delivers server updates. Successful Create/Read/Update subscribe the current
-connection to affected IDs before ACK. Author socket receives its own ACK, not an echo Changed.
-Other tabs/devices remain subscribers. Disconnect discards that connection's subscriptions.
+The header and full witness are authenticated with the encrypted payload. The [protocol specification](docs/PROTOCOL.md) defines byte layout and domain separation.
 
-Create content reserves an encrypted resource and receives an ID, then a separate atomic Update
-commits content plus its encrypted catalog entry. These are two commits, not a distributed
-transaction. Update batches and mixed Delete/Update are atomic at the compatible server.
-The first valid writer wins; later conflicting candidates fail. Mode S queues are bounded by
-the core's allowed window; individual promises correspond to their own ACKs.
+## Operational contract
 
-Writes are volatile and never automatically replayed. A missing or invalid success ACK gives
-UNKNOWN_OUTCOME. Lost Create master ID is not automatically recoverable. A later read may resolve
-the working state but cannot retroactively turn the original operation promise into success.
+One SDK instance uses one connection. Successful Read/Create/Update subscribes it before ACK. Its own write is confirmed by ACK; other subscribers receive Changed. Disconnect removes subscriptions.
 
-After a non-intentional disconnect from a previously established connection, a bounded SDK cycle
-reconnects, sends Hello and reads the resources again. Default: up to 5 attempts in 30 seconds,
-delays 500–5000 ms with 20% jitter; all are configurable. First failed ready is not auto-retried.
-Manual reconnect joins the same cycle; close cancels it. No second Socket.IO retry loop is enabled.
+Content creation reserves an ID, then atomically updates the content and master together. The two commits are not one distributed transaction. Update batches and mixed Delete/Update batches must be atomic at the compatible server.
 
-## Trust and invalid data
+Conflicting writers do not merge. X permits one pending write per resource. S permits a bounded local chain of pending writes. Every operation retains its own ACK/outcome.
 
-The SDK checks cryptographic validity, resource token/mode and no rollback relative to the current
-in-memory anchor. Ordinary Changed requires an allowed core transition. Full refresh/reconnect
-accepts an authenticated newer snapshot without the missed history, trusting the server's version
-selection. First login has no independent persisted anchor; latest-version proof is not supplied.
+Writes are volatile and are not replayed automatically. Missing or invalid success ACKs produce UNKNOWN_OUTCOME. Explicit refresh may resolve working state without changing the original rejected promise.
 
-Deletion notifications are trusted server statements. Invalid known updates in a mixed event are
-rejected before its deletions are applied. Failed read/verification preserves the last verified
-snapshot and blocks writes; recovery does not delete/recreate data automatically.
+Live updates require a valid chain transition. Full refresh/reconnect may accept an authenticated newer snapshot without missing intermediate history. The server's selection of that snapshot and its deletion notifications are trusted. Invalid input preserves verified local state and blocks normal writes.
 
-## Limits and distribution
+Explicit content recovery creates a new resource from a confirmed local copy, replaces one catalog entry and keeps the old resource.
 
-Node >=22 for the tested harness; browser ESM target ES2022, Web Crypto and native WebSocket.
-HTTPS is required, except explicit localhost HTTP for tests. Browser support has not been certified
-through a target-browser matrix. The bundled ESM is exercised in Node using native WebSocket/Web Crypto.
+## Interfaces
 
-Limits: 1 MiB JSON/resource, 63 content/master, 64 resources/batch, 8 MiB binary fields/message,
-128 attachments, 1.1 MB/attachment, 64 KiB decoder header, JSON depth 48 and 40000 nodes,
-8 pending incoming handlers and 128 intents/waits per relevant outgoing queue.
-Only oversized Read is split into smaller groups; atomic writes are not split.
+Exports: `Ulda`, `SocketIoTransport` and `UldaError`.
 
-The SDK has been tested with its in-memory fixture and the real ULDA Server/PostgreSQL.
-The fixture is not a production backend. Core, backend, SDK and application have separate release scopes.
+The client provides registration/opening, CRUD, nested references, local snapshots, refresh, reconnect, explicit recovery, close, and status/change/error/trace/reconnect events. Signatures and error behavior are defined in [API.md](docs/API.md).
 
-[LICENSE.md](LICENSE.md) governs the SDK under the ULDA Library Community Source License 1.0.
-Dependencies retain their own terms. The license version is independent of the package version.
-Build output carries SDK/dependency notices. No publication is performed by building the SDK.
+## Limits
 
-Remaining gates: final candidate/backend/browser/load acceptance, independent security review,
-owner review of release/legal texts and enabling the official repository/security reporting.
-[RELEASE.md](docs/RELEASE.md) describes packaging and evidence boundaries.
+| Limit | Value |
+|---|---|
+| Application JSON per resource | 1,048,576 UTF-8 bytes |
+| JSON nesting depth | 48 |
+| Visited JSON nodes | 40,000 |
+| Content entries per master | 63 |
+| Items per protocol batch/event | 64 |
+| Combined witness/payload bytes per message | 8,388,608 |
+| Binary attachments per Socket.IO packet | 128 |
+| Bytes per binary attachment | 1,100,000 |
+| Decoder text header | 65,536 UTF-8 bytes |
+| Queued incoming handlers | 8 |
+| Waiting/pending jobs per relevant outgoing queue | 128 |
+| Content name | 1–256 UTF-16 code units |
+| Master password input | 1–1024 UTF-16 code units |
 
-Exports: ESM source via ulda-auth, standalone ESM via ulda-auth/browser, and package.json.
-TypeScript declarations are included. Tests, fixture server, demos, tools and local archives
-are repository-only. The runtime code, cryptographic profile and wire were not changed for packaging.
+Container overhead and catalog metadata consume additional space; not every theoretical maximum can necessarily be combined in one batch. Oversized Read requests can be split into smaller groups. Atomic writes are not split.
+
+## Environment and distribution
+
+Node.js 22 or later; browser ES2022 with Web Crypto and WebSocket in a secure context. HTTPS endpoints are required except explicit HTTP loopback development.
+
+The normal ESM entry uses npm dependencies. The browser ESM bundles them and includes their license notices. The package contains runtime modules, declarations, the browser bundle and user documentation. Test fixtures and maintainer tooling are repository-only.
+
+Private fields, non-extractable keys and best-effort cleanup do not isolate secrets from hostile code controlling the same page or process. [Secret lifecycle](docs/SECRET_LIFECYCLE.md) defines cleanup responsibilities.
+
+The [ULDA Library Community Source License](LICENSE.md) governs the SDK. Dependencies retain their own licenses; the core and server have separate scopes.

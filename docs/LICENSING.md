@@ -1,28 +1,41 @@
-# Лицензирование SDK
+# Licensing
 
-06.10.2026 пользователь выбрал: «Условия по модели лицензии ядра, но отдельно для SDK».
-Подготовлен [LICENSE.md](../LICENSE.md): ULDA Library Community Source License 1.0.
-Это адаптация локального текста ULDA Core Community Source License 1.0, а не MIT/Apache и не
-автоматическое распространение лицензии ядра на всю библиотеку.
+ULDA Auth uses the [ULDA Library Community Source License 1.0](../LICENSE.md). This guide summarizes it; the license text controls.
 
-Сохранены исходные условия: source-available, порог USD 1 000 000, льготный переход 90 дней,
-отдельное разрешение для эквивалентного предложения, правила notices, совместное коммерческое
-лицензирование правообладателями, положения об ответственности и швейцарском праве.
+## Permitted use
 
-Изменены название, дата, область Covered Materials, определение Library Functionality и описание
-встраивания SDK в прикладной продукт. Зависимости явно исключены: лицензия SDK не изменяет условия
-ulda-core, Socket.IO и остальных пакетов. Имя ulda-auth включено в область SDK;
-переименование не распространяет условия автоматически на сервер/SaaS или другие продукты.
+The community license permits qualifying users to run, study, copy, modify and distribute the covered SDK materials, including use inside a larger application. It does not require publishing that application's source or private integration changes.
 
-Контакт коммерческого лицензирования и имена правообладателей перенесены из исходной модели.
-Перед публичным выпуском правообладателям нужно сверить окончательный текст, свои полномочия,
-контакт и продуктовую границу. Независимая юридическая проверка не выполнялась; текст здесь не
-является заключением о применимости каждого положения в любой юрисдикции.
+Eligibility covers individuals acting solely for the permitted non-commercial purposes and qualifying small organizations. Commercial use by a qualifying small organization is allowed, subject to the other conditions.
 
-В package.json указан `SEE LICENSE IN LICENSE.md`, как предусматривает
-[документация npm для собственного текста лицензии](https://docs.npmjs.com/cli/v11/configuring-npm/package-json/#license).
-Лицензия имеет версию 1.0, подготовленный пакет 1.0.0 ещё не опубликован. Нового SPDX-listed идентификатора не заявляем.
+This is source-available software, not an OSI-approved open-source license.
 
-npm-пакет включает SDK LICENSE/MANIFEST/SECURITY. Browser bundle сопровождается
-THIRD_PARTY_LICENSES.md с текстом лицензии SDK и лицензиями фактически включённых зависимостей. Их лицензии сохраняются дословно. Проверка состава tarball, чистой установки и notices автоматизирована через test:package.
-Статус публичного выпуска описан в [RELEASE](RELEASE.md).
+## Revenue threshold
+
+The threshold is **USD 1,000,000** in consolidated worldwide gross revenue/receipts for the organization and its controlled/common-control group. Both the most recently completed fiscal year and the current fiscal year to date are tested under the license's definitions.
+
+Organizations already above the threshold need a commercial license before exercising the licensed rights. An organization that qualified immediately before crossing it receives the specified 90-day transition to obtain a commercial license or stop exercising those rights, subject to the exceptions in the license.
+
+The threshold concerns the group's revenue, not only revenue attributable to ULDA. The license also defines treatment of freelancers, client/employer use, budgets for organizations without reportable revenue, currency conversion and requalification.
+
+A commercial license is a separate written agreement. The community license does not itself set a subscription price, billing period, support level or payment mechanism.
+
+## Equivalent SDKs and services
+
+Regardless of revenue, Section 5 requires a separate written commercial license to use the covered code, manifest, protocol documentation, examples or test vectors to develop or validate a functionally equivalent offering.
+
+This includes covered ports, replacements and standalone SDKs. Ordinary integration of the official SDK into an application with a materially different primary purpose is treated separately.
+
+The license does not claim ownership of an abstract algorithm, idea or functionality. It distinguishes restricted use of the covered materials from an independently created implementation that does not use them in the ways covered by the license. Copyright generally protects expression rather than underlying ideas or methods; see [WIPO](https://www.wipo.int/en/web/copyright/protection).
+
+## Distribution
+
+Preserve the license, copyright and attribution notices. Identify material modifications and do not present a modified product as an official ULDA release. Bundled applications may provide notices in accompanying documentation or a LICENSE/NOTICE/ABOUT file as described in the license.
+
+The generated browser distribution includes `THIRD_PARTY_LICENSES.md`. Distribute the applicable notices with that bundle.
+
+## Scope and contact
+
+The SDK license does not replace the licenses of `ulda-core`, Socket.IO or other dependencies. Separate server, SaaS and enterprise products have their own terms; this document does not grant rights for them.
+
+Commercial inquiries: [mark@shaposhnik.ch](mailto:mark@shaposhnik.ch). Commercial rights arise from a written agreement granted by the parties authorized under the license, not from an inquiry alone.

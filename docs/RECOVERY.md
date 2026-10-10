@@ -1,114 +1,87 @@
-# Явное пересоздание content
+# Explicit content recovery
 
-06.10.2026, ULDA-005. Пользователь выбрал: «Да, сделать явный метод; старый файл сохранять».
-Реализован `await sdk.recoverContent(name)`. Он нужен, когда исправный серверный content больше
-не удаётся получить, но SDK ещё держит его проверенную копию. Обычное восстановление соединения
-выполняется через reconnect и не создаёт новые файлы.
+`recoverContent(name)` creates a replacement content resource from the SDK's last confirmed local copy and replaces one entry in the master. The old server resource is preserved. It is not connection recovery, password recovery or automatic repair.
 
-## Вызов и результат
+## When to use it
 
-```js
-// Имя известно только приложению/SDK, открыто серверу не отправляется.
+Use this action when a content resource cannot be obtained in a valid form but the open SDK still holds a confirmed copy. A bad response alone does not prove that the stored resource is permanently damaged; an explicit refresh may be sufficient.
+
+Recovery may discard newer changes missing from the local source. Let the application or user make that decision. No merge is performed.
+
+~~~js
 const result = await sdk.recoverContent('notes');
-// { ok: true, previousId: '102', id: '205', sourceAge: 3, reconciled: false }
-const current = sdk.ref('notes'); // старый ref относится к прежнему ID
-```
+const current = sdk.ref('notes');
+~~~
 
-Результат содержит только ID и возраст исходной копии. `sourceAge` — возраст в **старой** цепочке,
-не время и не возраст нового файла. `reconciled:true` означает, что этот явный вызов проверил
-результат прежней записи с потерянным ACK. Прежний отклонённый Promise не становится успешным.
-При обычном успехе приложение получает `change` с `kind:'recovered'` и `[previousId, id]` в `ids`.
+Result:
 
-Метод никогда не вызывается автоматически из crypto-error/Changed/refresh/reconnect. Неверный
-ответ сам по себе не доказывает, что запись на сервере испорчена: сначала можно повторно прочитать
-проверяемый снимок. Пересоздание — осознанное действие приложения с возможной потерей более новых
-изменений, которых нет в локальной копии. Автоматического merge нет.
+~~~js
+{
+  ok: true,
+  previousId: '102',
+  id: '205',
+  sourceAge: 3,
+  reconciled: false
+}
+~~~
 
-## Источник и ограничения
+`sourceAge` is the age of the original confirmed chain, not a timestamp or the replacement's age. `reconciled: true` means this call confirmed a prior uncertain recovery update through verified reads. The earlier rejected promise remains rejected.
 
-- Нужен открытый контекст с проверенным master и подтверждённой локальной копией данного content.
-  `needsResync` после испорченного ответа допустим; offline, active reconnect и активные записи — нет.
-- При первом вызове копия и её sourceAge фиксируются внутри SDK. Неотправленное намерение или
-  кандидат с неизвестным ACK не используются как источник. Пока обычные неизвестные записи не
-  разрешены, метод даёт NEEDS_RESYNC. Произвольный JSON/ключ/origin от приложения не принимается.
-- Если копии нет, возвращается NOT_FOUND до сетевых записей. Вход на новом устройстве с повреждённым
-  файлом не создаёт копию; после доверенного Changed.deleted прежнее рабочее состояние очищено.
-  Скрытый backup ради восстановления не добавлен.
-- Сначала проверяются свежий master и остальные его content. Если повреждён master или другой
-  необходимый файл, метод не начинает Create. Целевой неисправный content как источник не читается.
-- Одна незавершённая операция пересоздания на SDK. Другая recovery/локальная активная операция —
-  BUSY; обычные новые записи при удерживаемом плане — NEEDS_RESYNC. Снимки остаются читаемыми.
+On completion, the change notification has kind recovered and includes both IDs.
 
-## Pipeline
+## Preconditions
 
-```text
-явный recoverContent(name)
-  → проверить контекст, наличие копии и отсутствие незавершённых записей
-  → сохранить проверенный JSON/исходную ссылку/режим/возраст в приватном плане
-  → Read master; проверить AEAD/token/sign(origin)/режим/локальный rollback и каталог
-  → убедиться, что имя всё ещё указывает на прежний ID/key/token
-  → прочитать и проверить остальные content целиком, не публиковать частичный набор
-  → новые secret/salt/token/origin; режим content сохраняется
-  → зашифровать пустую запись → volatile Create → ACK с новым ID
-  → запомнить ID и точные bytes резервной записи в плане
-  → подготовить следующий шаг нового content с сохранённым JSON
-  → заменить одну ссылку master и зашифровать его следующий шаг
-  → один атомарный volatile Update [новый content, master]
-  → после ACK принять весь набор локально, отпустить план, вернуть результат
-```
+- A verified master and confirmed local copy of the selected content must exist.
+- The transport must be connected, without an active reconnect cycle or competing local operation.
+- A session in needsResync after corrupt input may recover, but unresolved normal writes cannot be used as a recovery source.
+- An unacknowledged candidate or arbitrary JSON supplied by the application is not accepted as the source.
+- There is only one retained recovery plan per SDK. Normal writes are blocked while it remains unresolved.
 
-Master сохраняет ID и ключ, новый content имеет новые ID/секреты/цепочку. Старый ресурс не
-удаляется и не изменяется. Для сервера всё остаётся обычными `{id,witness,payload}`, без новой
-роли, названия метода восстановления, имени или связи parent. Create и Update — две отдельные
-фиксации; атомарен второй пакет, а не вся последовательность.
+If there is no local source, recovery returns NOT_FOUND before sending writes. Opening a damaged resource on a new device does not create such a source. A trusted deletion notification clears the working copy; no hidden recovery backup is kept.
 
-Остальные клиенты получают Changed master, узнают новый ID после расшифровки и читают его.
-Старые ref недействительны; ссылки на остальные ID сохраняются. Изменения другого клиента,
-пришедшие раньше задержанного ACK, проверяются после установки локального результата;
-ACK не откатывает их назад. Переполнение входящей очереди сохраняет блокировку записи.
+## Operation
 
-## Ошибка и повторный явный вызов
+1. Capture the confirmed JSON, mode, source age and original catalog identity.
+2. Read and verify the master. Its entry must still refer to the same ID, key and token.
+3. Read and verify other required content. The damaged target is not used as a source.
+4. Generate a new content key material, token and chain. Encrypt an empty reservation.
+5. Create the reservation and retain its returned ID.
+6. Prepare the replacement with the captured JSON and an encrypted master with exactly one replaced entry.
+7. Commit both through one atomic Update.
+8. Publish the verified set and release the plan on success.
 
-Повторять нужно **тот же** `recoverContent(name)` на том же экземпляре. Приватный план сохраняет
-исходную копию и известный новый ID; повторный вызов не выбирает незаметно другой источник.
+The master keeps its ID and key. The replacement has new secrets, ID and chain. The master does not keep two links for the same name. Other masters referencing the old ID are not modified.
 
-| Исход | Что произошло | Поведение следующего вызова |
-|---|---|---|
-| Проверка master/другого content не прошла | Create ещё не отправлялся | Повторно проверяет; источник остаётся прежним |
-| Create дал корректный ACK ошибки | Резервная запись не создана | Может явно повторить Create после новой проверки |
-| ACK Create потерян/неверен, включая известный конфликтующий ID | Ресурс мог создаться, usable ID нет | UNKNOWN_OUTCOME, без новых Create или угадывания ID |
-| ID получен, Update дал корректный ACK ошибки | Новый ресурс остаётся резервным, master не изменён | Проверяет master и **точное** прежнее содержимое резервного ID; повторно использует его |
-| Резервный ID удалён/изменён | Безопасно продолжить тот план нельзя | NOT_FOUND/CONFLICT; новый ID автоматически не создаётся |
-| ACK Update потерян/неверен | Обе записи могли сохраниться | Только Read; если новая ссылка/key/token и весь снимок подтверждены — reconciled:true |
-| После UNKNOWN_OUTCOME Read показывает старую/другую ссылку | Отсутствие результата пока не доказывает окончательный отказ | UNKNOWN_OUTCOME, никаких повторных записей |
-| Ссылка master уже заменена другой операцией до отправки | Источник плана больше не соответствует каталогу | CONFLICT, без подмены результата другого клиента |
-| Close | План и контекст больше не действуют | CLOSED; поздние ответы не открывают SDK |
+Create and Update are separate commits. An unreferenced reservation may remain if the second stage fails.
 
-Особенно важно: запрос на сервере может продолжать выполняться после клиентского timeout.
-Один Read со старым состоянием не разрешает повторить неизвестный Update. Доказать его окончательную
-нефиксацию существующим протоколом нельзя. При неподтверждаемом исходе план остаётся остановленным.
-Для завершения работы с таким планом приложение может закрыть SDK; следующая сессия не продолжит
-его автоматически. Это не восстановит неизвестный ID и не удалит оставшийся резервный ресурс.
+## Repeating the explicit action
 
-`refresh()` может принять проверенный снимок, но при удерживаемом плане не разрешает новые записи.
-Результат плана разрешается явным повторным recoverContent. Reconnect по-прежнему не отправляет
-записи: если после чтения план остаётся неразрешённым, автоматика останавливается с NEEDS_RESYNC.
+Repeat the same method with the same name on the **same SDK instance** to continue a retained plan. The source does not silently switch to another copy.
 
-## Приватность и общие ссылки
+| Situation | Continuation |
+|---|---|
+| Master/other content validation failed before Create | Verify again; retain the original source |
+| Create returned a valid definite rejection | A later explicit call may attempt Create after checking again |
+| Create ACK was lost/invalid or returned an unusable conflicting ID | UNKNOWN_OUTCOME; do not create again or guess an ID |
+| Reservation ID is known; Update returned a definite rejection | Verify the master and exact reserved record; reuse that reservation |
+| Reserved record was removed or changed | NOT_FOUND/CONFLICT; do not silently create a different replacement |
+| Update ACK was lost/invalid | Read only; report reconciled=true if the intended new link and full snapshot verify |
+| Read still shows the old/different link after an uncertain Update | Keep UNKNOWN_OUTCOME; that read does not prove the write will never commit |
+| Another client replaced the original catalog entry | CONFLICT; do not overwrite its replacement |
+| SDK was closed | CLOSED; late replies cannot restore the session |
 
-План хранит ключ/копию/кандидаты только в приватных полях, не в localStorage и не в trace. Close
-освобождает его вместе с контекстом и обнуляет известные собственные origin плана. При успехе
-используемые новые состояния остаются рабочими; ненужные origin плана обнуляются. Пределы JS-памяти
-из [SECRET_LIFECYCLE.md](SECRET_LIFECYCLE.md) действуют и здесь.
+An operation can continue on the server after a client timeout. A single read showing the old state is not evidence that the uncertain Update can safely be resent.
 
-Другие master, ссылающиеся на старый ID, не меняются. Сервер не может найти и исправить их каталоги.
-Прежняя подписка этого соединения сохраняется до disconnect; данные старого ID не применяются
-к новому ресурсу. Пересоздание не отзывает уже полученные кем-либо plaintext/ключи.
+`refresh()` may update the verified snapshot while the plan remains, but it does not by itself release the plan or enable normal writes. Reconnect never submits recovery writes. Continue explicitly with recoverContent or close the instance.
 
-Пересоздание **master** пока не реализовано: оно меняет ID входа и требует отдельного договора
-передачи пользователю и другим устройствам. Принятый в этом шаге метод касается content.
-Исходный проект и последствия для master — разбор в репозитории docs/RECOVERY_DESIGN.md.
+Closing discards the plan. A new SDK session does not resume it, recover an unknown ID or remove a leftover reservation.
 
-25 сценариев в tests/recovery.test.js проверяют X/S, два клиента, повреждения, отсутствие источника,
-конфликты, сохранение старого файла, lost/invalid ACK, отсутствие replay/дублирующего Create,
-close и запрет частичного принятия ответа. Результат всей проверки — [RELEASE.md](RELEASE.md).
+## References, sharing and privacy
+
+Old references address the old content identity and must be replaced with a new `ref`. Other clients observe the changed master, decrypt its entry and read the replacement.
+
+The old resource remains because other encrypted catalogs may still reference it. The server cannot enumerate those relationships. Recovery does not revoke keys or plaintext already obtained by other parties.
+
+The plan stays in private memory, not localStorage or diagnostics. Close releases it and wipes known owned origins. JavaScript memory limits described in [Secret lifecycle](SECRET_LIFECYCLE.md) still apply.
+
+There is no master-recreation method. Preserving or changing a master login ID requires a separate application/protocol design.

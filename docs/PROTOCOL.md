@@ -1,198 +1,205 @@
-# Wire-контракт ulda-auth 1.0.0
+# Socket protocol
 
-Обновлено: 10.10.2026. Шифроконтейнер v2, wire binary-v1, автоподписки при Create/Update/Read. Договор проверен с основным ULDA Server и PostgreSQL; упаковка SDK не меняет wire.
+This specification describes the binary Socket.IO contract used by ULDA Auth. It distinguishes server-visible records from the encrypted data interpreted only by clients.
 
-## Сокетные события
+## Connection and delivery
 
-Один экземпляр — одно Socket.IO-соединение, WebSocket transport, HTTPS/WSS вне явного localhost-теста.
-Без requestId, sessionId, watch, прикладных rooms, открытых имён или паролей.
-Ответ конкретной команды — callback ACK Socket.IO. Технический ACK ID ведёт сам Socket.IO.
+Each SDK instance opens one Socket.IO connection using WebSocket transport. Use HTTPS outside an explicitly allowed local development connection.
 
-| Событие | Тело | Успешный ACK |
+Request bodies contain no application requestId, sessionId or watch flag. Socket.IO's callback ACK identifies the request being answered. There are no public content names, passwords, origins or master/content labels in CRUD bodies.
+
+Create, Update and Delete are sent as volatile events. Hello, Read and session.close use ordinary emit on an active connection. Every request has an ACK deadline. Volatile events can be dropped; they do not guarantee atomicity or delivery. Socket.IO write retries and its own reconnect loop are disabled; the SDK owns bounded reconnection.
+
+## Events
+
+| Event | Request body | Successful ACK |
 |---|---|---|
-| `ulda:hello` | `{}` | `{ok:true}` |
-| `ulda:read` | `["101", "102"]` | `{ok:true,data:[{id,witness,payload}, ...]}` |
-| `ulda:create` | `[{witness,payload}, ...]` | `{ok:true,data:["101", ...]}` в порядке запроса |
-| `ulda:update` | `[{id,witness,payload}, ...]` | `{ok:true}` на весь массив |
-| `ulda:delete` | `[{id,witness}, ...]`; дополнительные обновляемые записи имеют форму `{id,witness,payload}` | `{ok:true}` на весь массив |
-| `ulda:session.close` | `{}` | `{ok:true}` |
-| `ulda:changed` | `{updated:[{id,witness,payload}, ...],deleted:["101", ...]}` | Не требует ACK |
+| `ulda:hello` | `{}` | `{ ok: true }` |
+| `ulda:read` | `["101", "102"]` | `{ ok: true, data: [record, ...] }` |
+| `ulda:create` | `[{ witness, payload }, ...]` | `{ ok: true, data: ["101", ...] }` |
+| `ulda:update` | `[{ id, witness, payload }, ...]` | `{ ok: true }` |
+| `ulda:delete` | Removal entries `{ id, witness }` and optional replacement entries `{ id, witness, payload }` | `{ ok: true }` |
+| `ulda:session.close` | `{}` | `{ ok: true }` |
 
-В Changed можно опустить одну из двух групп; хотя бы один ID должен присутствовать. Пересечения/повторные ID отклоняются.
-Changed получает каждое затронутое соединение-подписчик, кроме сокета автора этой команды.
-Автор принимает собственный подготовленный снимок по успешному ACK; его подписка сохраняется для чужих изменений.
-ACK Update/Delete `{ok:true}` подтверждает весь отправленный массив: callback уже связан с запросом,
-поэтому возвращать те же ID повторно не требуется. Другой сокет того же пользователя не исключается из Changed.
+All resource requests use arrays, including a Read of one master. Arrays are nonempty and contain at most 64 entries. Repeated IDs are rejected.
 
-Решение 06.10.2026: `Changed.deleted` принимается как доверенное сообщение сервера о факте удаления.
-Криптографическое подтверждение удаления не добавляется. Если сообщение смешанное, обновлённые
-известные клиенту ресурсы проверяются до применения удаления; повреждённый updated отвергает набор.
-При refresh/reconnect клиент принимает проверенный снимок с большим age без промежуточной истории,
-сохраняя обязательные проверки контейнера, token, режима и отсутствие локального отката.
-В SDK Create, Update и Delete отправляются volatile. Hello, Read и close — обычные emit при живом соединении.
-Изменяющие запросы не повторяются Socket.IO автоматически; ACK имеет deadline. Volatile может потерять событие и не создаёт транзакцию.
-Сохранение в БД и отправка ACK — разные действия.
+Create returns one unique ID per submitted entry, in request order. Read returns exactly one record per requested ID; response order is not significant. Update/Delete ACK the entire submitted batch and do not repeat the IDs.
 
-Уточнение 06.10.2026, принято пользователем со слов Марка: для Create master сохраняем volatile + deadline ACK.
-Потеря запроса/ответа завершается UNKNOWN_OUTCOME, без автоматического повтора и открытия master.
-Дополнительного ACK клиента на полученный ID нет; одинаковое правило не добавляет метку роли ресурса.
-Ресурс мог остаться на сервере с неизвестным клиенту ID. Это принятое ограничение 1.0, не rollback.
+Server push:
 
-Ошибка команды: `{ok:false,error:"conflict",id:"101"}`; `id` необязателен.
-Коды стенда: invalid_request, unsupported_profile, not_found, invalid_witness, conflict, too_large, storage_error.
-SDK отображает известные коды в свои фиксированные ошибки и не показывает произвольный текст сервера.
-Некорректный ACK успешной записи означает `UNKNOWN_OUTCOME`: операция могла сохраниться.
+~~~js
+{
+  updated: [{ id, witness, payload }],
+  deleted: ['103']
+}
+~~~
 
-## Публичные поля ресурса
+The event name is `ulda:changed`. It does not require an ACK. Either group may be omitted, but the event must contain at least one ID and at most 64 total IDs. Duplicate IDs and IDs appearing in both groups are rejected.
 
-- `id`: десятичная строка, 1–40 цифр, без ведущего нуля.
-- `witness`: бинарное вложение Socket.IO, полный canonical compactV1 пакет ядра. Только X/S, N=5, SHA-256, originSize=256, age uint32.
-- `payload`: бинарное вложение Socket.IO, **зашифрованный** контейнер SDK. Открытого JSON в поле нет.
+## Server-visible record
 
-SDK отправляет Uint8Array; Socket.IO принимает/возвращает Buffer в Node и ArrayBuffer в браузере.
-На границе они нормализуются в Uint8Array с учётом byteOffset/byteLength. Строки Base64, числовые массивы,
-объекты `{type:"Buffer",data:...}` и SharedArrayBuffer отвергаются. JSON.stringify над телом события не используется.
-Старый строковый wire несовместим; нужен обновлённый транспорт и стенд с обеих сторон.
-Контейнер v2 внутри payload не меняется: для сохранённых строк v2 технически возможно Base64URL-декодирование,
-но автоматическая миграция записей/старых процессов не реализована. Шифроконтейнер v1 по-прежнему отклоняется.
+~~~js
+{
+  id: '101',
+  witness: witnessBytes, // Uint8Array / binary attachment
+  payload: payloadBytes // Encrypted container / binary attachment
+}
+~~~
 
-Socket.IO передаёт текстовое описание события с placeholders и отдельные бинарные attachments;
-это не один голый бинарный кадр на всю команду. Witness/payload больше не увеличиваются внешним Base64:
-163/167 байт вместо 218/223 символов. Экономия длинных полей относительно Base64 близка к 25%,
-но заголовки и дополнительные кадры влияют на общий размер, особенно у малых сообщений.
-[Поддержка binary](https://socket.io/docs/v4/emitting-events/), [формат пакетов](https://socket.io/docs/v4/socket-io-protocol/).
+- `id` is a decimal string, 1–40 digits with no leading zero.
+- `witness` is the complete canonical compactV1 core packet: SHA-256, N=5, X/S, 256-bit origin blocks, uint32 age.
+- `payload` is an authenticated encrypted SDK container, not application JSON.
 
-06.10.2026: стандартный socket.io-parser 4.2.7 по умолчанию принимает только 10 бинарных вложений.
-У SDK и стенда используется его ограниченный Decoder из src/socket-parser.js: до 128 вложений
-(64 ресурса × witness/payload), до 8 MiB суммарных бинарных байт, до 1100000 байт одного вложения,
-до 64 KiB текстового заголовка в UTF-8. Байтовые пределы проверяются до удержания очередного
-вложения парсером; незавершённая сборка освобождается при ошибке/закрытии. Прикладная проверка
-схемы и размера всего сообщения остаётся обязательной. Wire-формат Socket.IO не изменён.
-Совместимому серверу также нужна настройка лимитов; отключать их целиком нельзя.
+Create has no ID because the server assigns it. The server stores no resource role, content name, password or parent reference. The encrypted catalog is a client concern.
 
-Транспорт получает непрозрачный внутренний пакет; plain JSON разработчика в него напрямую не передаётся.
-Параметры ULDA извлекаются из witness header. Параметры шифрования — отдельный профиль контейнера, который header ядра не заменяет.
-Сохранённая запись содержит ровно `{id,witness,payload}`. Сервер не хранит роль, имя или родителя ресурса;
-связи каталога клиент извлекает только после расшифровки. Create не содержит ID, потому что его назначает сервер.
+The client submits only the candidate witness on mutation. The server compares it against the currently stored witness. It must not accept a client-provided replacement for its current validation anchor.
 
-## Шифроконтейнер
+## Binary representation
 
-Байты бинарного payload:
+The SDK emits Uint8Array fields. Incoming Buffer/Uint8Array and ArrayBuffer values are normalized using their actual view bounds. Strings, numeric arrays, serialized Buffer objects, SharedArrayBuffer and empty or oversized binary fields are rejected.
 
-| Смещение | Размер | Значение |
+Socket.IO carries an event header with binary placeholders and separate attachments. Do not JSON.stringify the event body or wrap witness/payload in Base64. This is Socket.IO's binary protocol, not a single custom raw WebSocket frame.
+
+The decoder bounds reconstruction to:
+
+- 128 binary attachments;
+- 8,388,608 combined binary bytes;
+- 1,100,000 bytes per attachment;
+- 65,536 UTF-8 bytes for the text header.
+
+The server must configure compatible parser/transport limits and still validate complete application messages. These checks bound retained protocol input, not all allocations in the host process.
+
+## Error ACK
+
+~~~js
+{ ok: false, error: 'conflict', id: '101' }
+~~~
+
+`id` is optional. No additional fields are accepted.
+
+| Server error | SDK code |
+|---|---|
+| conflict | CONFLICT |
+| invalid_witness | CONFLICT |
+| not_found | NOT_FOUND |
+| too_large | LIMIT |
+| unsupported_profile | UNSUPPORTED_PROFILE |
+| Other error strings, including invalid_request/storage_error | SERVER_ERROR |
+
+Server-provided text and stack traces are not forwarded to the application. A missing or malformed success ACK for a sent write becomes UNKNOWN_OUTCOME: a database commit may already exist.
+
+There is no extra client receipt for Create, durable operation-status endpoint or automatic lookup for a lost generated ID. A Create with a lost ACK may leave an unreachable resource from that client's perspective.
+
+## Encrypted container v2
+
+| Byte offset | Length | Meaning |
 |---|---|---|
-| 0 | 4 | `55 4c 44 02` — общий ULDA SDK container v2 |
-| 4 | 16 | Случайный salt любого ресурса |
-| 20 | 12 | Случайный nonce AES-GCM |
-| 32 | остальное | Ciphertext и 16-байтный authentication tag |
+| 0 | 4 | Magic/version: 55 4c 44 02 |
+| 4 | 16 | Resource salt |
+| 20 | 12 | AES-GCM nonce |
+| 32 | Remaining bytes | Ciphertext followed by the 16-byte authentication tag |
 
-AAD: `UTF8("ULDA-SDK/container/v2\0") || bytes[0:20] || witnessBytes`.
-AES-256-GCM, tagLength=128. Master: PBKDF2-HMAC-SHA-256, 600000 итераций, 256-битный ключ.
-Для content исходный секрет — 32 случайных байта в ciphertext master; AES-256 ключ получается через
-HKDF-SHA-256 с salt контейнера и `info=UTF8("ULDA-SDK/content-key/v2")`. Оба AES CryptoKey неэкспортируемые.
-Клиент выбирает способ получения ключа по локальному контексту: введённый ID/пароль или расшифрованный каталог.
-Заголовок не содержит роли ресурса. Нулевой salt для content и байт роли из v1 удалены.
-Накладные расходы контейнера — 48 байт, без учёта зашифрованного JSON.
+Container overhead is 48 bytes. Every encryption uses a fresh random nonce. The salt belongs to the resource's derived key and is carried with its state.
 
-Только **после расшифровки** получается:
+~~~text
+AAD = UTF8("ULDA-SDK/container/v2\0")
+      || payload[0:20]
+      || completeWitnessBytes
+~~~
 
-```text
-{ token: случайный Base64URL,
-  origin: полный секретный пакет Base64URL,
-  data: JSON }
-```
+`\0` is a single zero byte. AES-GCM uses a 256-bit key and a 128-bit tag. The nonce is the AES-GCM IV; the authenticated header is the magic plus salt.
 
-`data` master имеет вид `{contents:[{id,name,key,token}, ...]}`. Имена, key и token находятся внутри ciphertext.
-Token связывает открытый content с записью master; `sign(origin)` сверяется с witness.
-Для content `data` — непосредственно JSON приложения, для начального пустого content — `null`.
-Base64URL внутри приватного JSON для origin/token/секретов каталога пока сохранён; этот JSON целиком шифруется.
-Убрана внешняя Base64-обёртка сетевых witness/payload. Менять приватный формат на отдельный бинарный codec здесь не требуется.
+Master keys use PBKDF2-HMAC-SHA-256 with 600000 iterations and the container salt. Content keys use HKDF-SHA-256 with an independent 32-byte secret, that content's salt, and `UTF8("ULDA-SDK/content-key/v2")` as info. AES keys are non-extractable.
 
-v1 явно отклоняется: автоматической миграции нет. Новый тестовый стенд запускается отдельно;
-обновлённая страница проверяет версию стенда до включения операций. 06.10 основной сервер интегрирован с этим wire; см. [RELEASE.md](RELEASE.md).
+The container header does not encode the key-derivation role. The client knows whether it is opening its master or a content entry from its local context.
 
-Отсутствие метки роли не скрывает длины, время, совместную отправку ID и публичный режим witness.
-Поскольку master всегда X, ресурс S позволяет предположить content. Полная неразличимость трафика потребовала бы
-другого договора о режимах и маскировке размеров; сейчас она не обещается.
+After decryption only, the plaintext object is:
 
-## Границы операций
+~~~text
+{
+  token: Base64URL(32 random bytes),
+  origin: Base64URL(complete secret origin packet),
+  data: application JSON or encrypted-catalog data
+}
+~~~
 
-**Add:**
+The master's private data has this shape:
 
-1. Создать X/S content с `data:null`, независимыми ключом, token, origin и witness; отправить Create. Сервер после commit подписывает соединение на назначенный ID.
-2. Получить ID.
-3. Записать ID/имя/ключ/token в локальную копию master, заполнить content.
-4. Подготовить следующий witness и ciphertext каждого ресурса.
-5. Отправить **один Update `[content, master]`**. Эти две записи атомарны между собой.
-6. После подтверждения принять подготовленные состояния локально. Update уже проверил подписки до ACK; отдельного Read content ради подписки нет.
+~~~text
+{
+  contents: [
+    { id, name, key, token }
+  ]
+}
+~~~
 
-Create и второй Update не являются одной транзакцией. При сбое может остаться зашифрованный пустой content.
-Его размер больше «нескольких десятков байт»: он содержит ULDA origin в шифроконтейнере, witness, nonce, tag и служебные поля.
+`key` is the Base64URL content secret. Names, keys, tokens and the full origin never become plaintext fields in a socket request. Base64URL here is inside the encrypted JSON; it is not a wire wrapper.
 
-**Update:** сервер проверяет весь массив относительно текущих witness, под общей защитой от конкурирующих записей.
-X допускает gap=1, S — 1..4. Ошибка любого элемента оставляет весь массив прежним. Changed отправляется после commit.
-Проверка witness не проверяет AES-GCM tag на сервере: ключа у него нет.
+Clients verify AES-GCM, exact private fields, the expected identity token where known, the allowed mode/profile and `sign(origin) === witness`. Container v1 is rejected; automatic migration is not part of this protocol.
 
-**Delete:** элемент `{id,witness}` физически удаляет ресурс;
-элемент `{id,witness,payload}` обновляет его. Наличие payload различает две операции без дополнительного поля.
-Требуется хотя бы один удаляемый ресурс; ID всех элементов уникальны, действуют общие лимиты.
-Сначала сервер проверяет все witness относительно текущего состояния, затем одним commit применяет весь массив.
-Ошибочный witness master не должен позволить удаление content. Шифрование нового master обязательно проверяется на выходе SDK.
-`delete(name)` отправляет `[contentProof, encryptedMasterUpdate]`; второй элемент содержит зашифрованный каталог без ссылки.
-SuperDelete отправляет только доказательства удаления всех content и master одной командой, master последним.
-06.10 этот mixed Delete реализован также в основном сервере и проверен с SDK/PostgreSQL. Отдельное утверждение Марка этим не приписывается.
+No explicit role marker does not imply indistinguishability: lengths, timing, grouped IDs and the public mode still reveal information. In particular, masters are always X.
 
-## Диагностика локального стенда
+## Atomic server operations
 
-При `fixture({diagnostics:true})` сервер отправляет затронутому сокету `ulda:diagnostic`:
-`{action,step,ids,count}`. Это отдельный необязательный канал наблюдения без ACK, не часть тела CRUD-команды.
-Допустимы только фиксированные action/step, десятичные ID и ограниченный count. В пакете нет имён, ключей,
-origin, значений witness/payload или произвольных ошибок. Обработчик транспорта включается явно через `diagnostics:true`;
-некорректные диагностические события игнорируются и не влияют на протокол.
-В журнале время серверного этапа — время получения клиентом; последовательность описывает реальные точки выполнения стенда.
-Сервер подтверждает проверку публичного witness и запись ciphertext, но не AES-GCM tag: ключей у него нет.
-`time`, `durationMs`, `request` и `connection` — только поля клиентского журнала. `connection` — порядковый номер
-экземпляра на странице, не серверная сессия. В CRUD их нет. Без подписчиков `trace` SDK не строит сводки
-и не измеряет длительность запросов. Для стенда `ULDA_DEMO_DEBUG=0` отключает серверную диагностику и журнал страницы.
+### Create
 
-## Подписки и порядок
+Validate the batch, store each encrypted record and assign IDs. A successful response must represent the committed batch. Subscribe the live initiating connection before ACK.
 
-Read принимает массив даже для одного файла. Проверяет все ID, получает снимки и регистрирует соединение до возможного пропуска следующего обновления.
-Create после успешной фиксации добавляет подписки на назначенные ID. Update после проверки всего массива
-и commit добавляет подписки на все обновлённые ID. Смешанный Delete подписывает на обновлённые элементы с payload;
-на физически удалённые ресурсы подписка не создаётся. Всё это выполняется до успешного ACK/рассылки, без сетевого subscribe-запроса.
-Ошибка проверки/конфликт не добавляют подписок ни на один элемент массива. Если запись состоялась, но ACK потерян,
-подписки уже существуют до disconnect; клиент по-прежнему получает UNKNOWN_OUTCOME, а не ложный успех.
-Ответ Read ставится раньше последующих Changed этого состояния. Подписки исчезают при disconnect; reconnect выполняет Read снова.
-Стенд хранит два индекса: `Map<id, Set<socket>>` и `Map<socket, Set<id>>`, не вызывает join/to для прикладных rooms.
-Повторные Create/Update/Read используют общую subscribe-проверку Set; существующая связь не дублируется.
-Рассылка обходит только множества затронутых ID, группирует изменения
-и отправляет один Changed на соединение, пропуская сокет автора. Удаление удаляет ID из обоих индексов после формирования рассылки.
-Disconnect/close проходит только ID этого соединения, удаляя также пустые Set. Операция уже отключённого сокета не создаёт подписок.
-При среднем O(1) доступе к Map/Set: подписка O(k), рассылка O(суммы подписчиков затронутых ресурсов),
-очистка O(числа подписок уходящего сокета); дополнительно требуется сериализация и передача самих данных.
-Два индекса хранят каждую связь с двух сторон. Это обмен памяти на отсутствие глобальных обходов,
-а не измеренное обещание пропускной способности. Общая очередь транзакций стенда по-прежнему последовательная.
-SDK последовательно применяет входящие состояния, а исходящие очереди отдельно ждут ACK, чтобы не возникла взаимная блокировка.
-Register после корректного ACK с ID открывает уже подготовленный локальный master: ключ, origin, каталог,
-witness и ciphertext не создаются заново. Read master и повторный PBKDF2 после регистрации отсутствуют.
-Changed во время ожидания Create ACK ждёт локальной активации в очереди, затем проверяется и применяется.
-Если ACK потерян/некорректен, master не активируется и Create не повторяется автоматически.
-Read при входе в существующий master, refresh/reconnect и обнаружении нового content другим клиентом остаётся.
+For content creation, the SDK initially stores encrypted null data. The following content/catalog Update is a separate commit; a crash between them may leave a reserved resource.
 
-Собственный ACK может задержаться относительно чужого Changed. SDK временно хранит приватные кандидаты,
-которые сам подготовил и отправил, и проверяет промежуточные переходы через них обычным core.verify.
-Нельзя просто принять больший возраст X: без известного пути требуется refresh. Получение чужого состояния
-не завершает Promise собственной команды; потерянный ACK остаётся UNKNOWN_OUTCOME. Поздний ACK не откатывает
-уже принятую более новую версию. Для нового content до ACK add входящий снимок хранится приватно;
-при завершении add используется последняя проверенная версия, удалённый другим клиентом ID не воскрешается.
+### Update
 
-## Ограничения
+Validate every candidate against the current stored witness under the same concurrency protection used for commit. Under this profile, X permits a one-step transition; S permits the core's bounded 1–4-step window.
 
-64 элемента на массив, 8 MiB суммарных бинарных witness/payload, 63 content на master, 1 MiB JSON на один ресурс.
-Too_large на Read позволяет разбить массив и повторить меньшие Read. Атомарный Update/Delete не делится.
-После сетевого разрыва SDK автоматически ограниченно повторяет подключение, hello и Read;
-подписки строятся заново. Это не Socket.IO connection state recovery: старый session ID,
-история пропущенных событий и серверный буфер не восстанавливаются. Новых полей wire не добавлено.
-Долговременного журнала operationId/status, офлайн replay, пользовательской авторизации или CRDT нет.
-Для первого witness, восстановления через большой gap и права физического удаления действует модель доверия из [SECURITY.md](../SECURITY.md).
+Commit the entire batch or none of it. Replace witness and payload together. A stale candidate fails with conflict rather than overwriting another writer.
+
+The server verifies public witness transitions, not the AES-GCM tag: it has no decryption key.
+
+### Delete
+
+At least one entry must omit payload; that entry is a physical deletion proof. Entries with payload are updates in the same transaction. All IDs must be unique.
+
+Validate all witnesses first, then atomically apply all deletions and updates. Deleting content plus updating its master therefore uses:
+
+~~~text
+[
+  { id: contentId, witness: nextContentWitness },
+  { id: masterId, witness: nextMasterWitness, payload: nextEncryptedMaster }
+]
+~~~
+
+The body carries no master role. The server interprets the entries only by the presence of payload. SuperDelete sends deletion proofs for all listed contents and the master in one batch.
+
+## Subscriptions and ordering
+
+Successful Read/Create/Update registers the live connection for the affected IDs, without duplicate subscription entries. Read returns a coherent record snapshot and establishes its subscription before a later update can be missed. Enqueue its response before subsequent Changed notifications for that state.
+
+Commit before ACK and Changed. The initiating socket receives its own ACK and does not receive an echo Changed for that command. Other sockets, including another device for the same user, remain eligible.
+
+Group affected subscribed resources into a Changed event for each recipient. A subscription index keyed by resource ID and a reverse index keyed by connection allow targeted delivery and cleanup; the wire does not expose or require those data structures.
+
+Disconnect/session.close removes subscriptions for that connection. Reconnect uses new reads rather than restoring a persisted socket session or replaying missed Changed events. An operation completing after disconnection must not recreate a subscription for the closed connection.
+
+## Client application of responses
+
+After its own valid ACK, the SDK accepts its already prepared local candidate. It does not reread solely to subscribe or repeat encryption for that acknowledged state.
+
+An incoming update can arrive before a delayed ACK. The SDK may validate a path through its own exact sent candidates. An older ACK must not roll back a newer verified state, and a Changed event does not resolve the promise of a write whose ACK was lost.
+
+The client verifies a complete staged incoming set before publishing known updates/deletions. New content IDs discovered in an authenticated master require subsequent reads and verification. Unknown records cannot be decrypted or exposed without catalog credentials.
+
+Live Changed requires valid lineage. Explicit refresh/reconnect may accept a newer authenticated snapshot without intermediate history. Deleted IDs are trusted server statements. See [Security](../SECURITY.md) for first-open, rollback and deletion assumptions.
+
+## Read splitting and compatibility
+
+Oversized Read requests may be split into smaller arrays. Each reply must still match its request. The SDK publishes the combined snapshot only after all required records pass verification. Separate reads do not provide one global database snapshot across concurrent changes.
+
+Atomic Update/Delete batches are never split. The supported limits are in the [manifest](../MANIFEST.md).
+
+No operation IDs, offline replay, ACL fields, CRDT merge or password-reset protocol are supplied by this contract. A compatible implementation in another language must preserve the byte format, validation rules, atomicity and failure semantics.
+
+## Optional diagnostics
+
+A development server may emit `ulda:diagnostic` with `{ action, step, ids, count }`. This is outside CRUD and requires no ACK. The standard transport reads it only when configured with `diagnostics: true`.
+
+Only recognized action/step codes and bounded metadata are accepted. Invalid diagnostic input is ignored. Trace timestamps, request sequence numbers and durations are local diagnostics, not fields added to CRUD or server resource records.

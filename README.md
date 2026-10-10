@@ -1,103 +1,132 @@
 # ULDA Auth
 
-`ulda-auth` — клиентский JavaScript SDK для зашифрованных JSON-ресурсов, построенный на
-`ulda-core@1.0.1` и Socket.IO. Название пакета не означает наличие сервиса аккаунтов:
-приложение само предоставляет адрес сервера, master ID и пароль пользователя.
+A JavaScript SDK for encrypted JSON resources over Socket.IO, built on [ULDA Core](https://github.com/ulda-io/ulda-core).
 
-Подготовлен выпуск **1.0.0**, ещё не опубликован. Репозиторий для публикации: [ulda-io/ulda-auth](https://github.com/ulda-io/ulda-auth).
-Совместимость с основным ULDA Server и PostgreSQL проверена; проведён ИИ-обзор безопасности
-и исправлены его находки. Человеческий аудит и полная приёмочная матрица не завершены.
-[Статус и проверка пакета](docs/RELEASE.md).
+ULDA Auth encrypts application data on the client, maintains a separate ULDA chain for each resource, and synchronizes changes across connected clients. Applications work with JSON and explicit update methods.
 
-## Подключение пакета
+## Install
 
-После выпуска: `npm install ulda-auth`. До публикации установите полученный
-`ulda-auth-1.0.0.tgz` через `npm install ./ulda-auth-1.0.0.tgz`.
+~~~sh
+npm install ulda-auth
+~~~
 
-```js
+Requires Node.js 22 or later, or a browser with ES2022, Web Crypto and WebSocket support. Use an HTTPS endpoint running a compatible [ULDA protocol](docs/PROTOCOL.md) server. A generic Socket.IO server is not sufficient.
+
+The package provides ES modules. JavaScript is the runtime implementation; TypeScript declarations are included for editor assistance and typed applications.
+
+## Quick start
+
+The application supplies the server URL and a password obtained from the user.
+
+~~~js
 import { Ulda } from 'ulda-auth';
 
-const sdk = new Ulda('https://your-compatible-server.example');
-await sdk.ready;
-const masterId = await sdk.register(userPassword);
-// Приложение сохраняет ID для пользователя. После ACK master уже открыт.
-// Для существующего master на новом экземпляре:
-// await sdk.connect(savedMasterId, userPassword);
+export async function createNotebook(endpoint, password) {
+  const sdk = new Ulda(endpoint);
 
-await sdk.add('notes', { title: 'Первая заметка', done: false });
-await sdk.data.notes.title.update('Новый заголовок');
-const title = sdk.data.notes.title.get();
+  try {
+    await sdk.ready;
+    const masterId = await sdk.register(password);
+
+    await sdk.add('notes', { title: 'First note', done: false });
+    await sdk.data.notes.title.update('Updated title');
+
+    const note = sdk.value('notes'); // An independent JSON copy.
+    return { masterId, note };
+  } finally {
+    await sdk.close();
+  }
+}
+~~~
+
+Keep the returned master ID: it identifies the encrypted catalog needed to reopen the data. Store and present it through your application. ULDA Auth does not provide usernames, password reset or an account directory.
+
+To open an existing catalog:
+
+~~~js
+import { Ulda } from 'ulda-auth';
+
+export async function openNotebook(endpoint, masterId, password) {
+  const sdk = new Ulda(endpoint);
+  try {
+    await sdk.connect(masterId, password);
+    return sdk; // The caller owns this session and must close it when finished.
+  } catch (error) {
+    await sdk.close();
+    throw error;
+  }
+}
+~~~
+
+Resource IDs are decimal **strings**, not JavaScript numbers.
+
+## Working with data
+
+~~~js
+const notes = sdk.ref('notes');
+
+const title = notes.title.get();
+await notes.title.update('Another title');
+await sdk.set('notes', ['done'], true);
+
+// Editing a returned copy does not write to the server.
 const copy = sdk.snapshot();
+
+const unsubscribe = sdk.on('change', () => {
+  const current = sdk.snapshot();
+  // Render or otherwise use the current application data.
+});
+
+// Later:
+unsubscribe();
 await sdk.close();
-```
+~~~
 
-Не записывайте пароль в исходники приложения. Хранением ID, вводом/очисткой пароля,
-защитой страницы от XSS и показом ошибок управляет приложение. SDK не сохраняет
-секреты в localStorage, файлы или логи.
+References are explicit: use `.get()` to read a value and await `.update()` or `.delete()` to change it. Assigning to a reference does not save data and is rejected.
 
-## Среды и сборки
+## Resource model
 
-- ESM, Node.js >=22. CommonJS entry не предоставляется.
-- Браузер: HTTPS, Web Crypto и WebSocket, синтаксис ES2022. Проверенные версии и
-  ограничения приёмки перечислены в [RELEASE](docs/RELEASE.md).
-- Обычный `import ... from 'ulda-auth'` использует исходные ESM-модули и npm-зависимости.
-- `import ... from 'ulda-auth/browser'` выбирает готовый ESM, включающий ядро и Socket.IO.
-  Без сборщика скопируйте `dist/ulda-library.js` и лицензионные документы на свой сервер
-  и импортируйте файл через `<script type="module">`. Голое имя npm-пакета само по себе
-  не разрешается браузером без сборщика/import map.
-- Декларации TypeScript включены. Типы не заменяют проверки сетевых данных и JSON.
-  Для схемы приложения: `new Ulda<{ notes: { title: string; done: boolean } }>(endpoint)`.
-- Непубличные пути `src/crypto.js` и тестовые файлы не экспортируются.
-  Это граница API, а не изоляция от кода, контролирующего процесс.
+A **master** is an encrypted catalog of content IDs, names and secrets. A **content** resource holds application JSON. Each has its own encryption material and ULDA chain.
 
-Ядро — отдельная закреплённая зависимость из npm; локальные архивы разработчика
-для установки не нужны. Тесты, CI и инструменты разработки остаются
-в репозитории и не входят в пакет. Основной сервер развивается отдельно. Browser bundle дополнительно содержит точные
-тексты лицензий включённых зависимостей.
+The server stores `id`, public `witness` and encrypted `payload`. Content names, catalog entries, application JSON and the full origin remain inside encrypted containers. IDs, lengths, witness metadata and traffic patterns remain visible.
 
-## Поведение
+Successful Create, Read and Update operations subscribe the connection to changes. The initiating connection receives an ACK; other subscribed connections receive updates. Disconnecting clears subscriptions, which are rebuilt by reading after reconnect.
 
-Master — зашифрованный каталог ID, имён и секретов content. На сервере все ресурсы
-одинаковы: ID, публичный witness и зашифрованный payload. Открытая роль master/content
-не отправляется. Полный origin, каталог и пользовательский JSON зашифрованы.
-ID, размеры, witness и связи между обращениями серверу видны.
+## Concurrency and failures
 
-Успешные Create/Read/Update подписывают соединение на изменения до ACK. Автор получает
-ACK; другие подписчики — Changed. Отдельное чтение ради подписки не требуется.
-При конфликте выигрывает первая допустимая запись; приложение перечитывает состояние
-и решает, повторять ли намерение. Скрытого повтора записей и офлайн-очереди нет.
+- Mode **X**, the default, waits for an acknowledgement before sending the next write for that resource. Mode **S** allows a bounded sequence of pending writes.
+- Conflicting writers do not merge automatically. Refresh, inspect the current data, and decide whether to apply the intended change again.
+- A timeout after sending a write can produce `UNKNOWN_OUTCOME`: the server may have committed it. The SDK never automatically replays writes.
+- Creating content uses two server commits: reserve its ID, then atomically update the content and master. An interrupted operation can leave an unreferenced encrypted resource.
+- Reconnect retries are bounded. There is no persistent offline write queue.
 
-После разрыва включены ограниченные автоматические попытки reconnect и Read.
-Неизвестный исход записи остаётся UNKNOWN_OUTCOME; потерянный Create ACK может оставить
-ресурс с неизвестным ID. Создание content и изменение каталога — два отдельных commit.
-После offline принимается проверенный новый снимок без полной истории промежуточных
-переходов. Уведомлению сервера об удалении доверяем. Подробности: [SECURITY](SECURITY.md).
+See the [usage guide](docs/GUIDE.md) for errors, reconnect, deletion and recovery. Read the [security policy](SECURITY.md) before integrating sensitive data.
 
-## Документация
+## Browser entry
 
-- [API, параметры, результаты и ошибки](docs/API.md).
-- [Протокол Socket.IO](docs/PROTOCOL.md).
-- [Псевдокод каждого pipeline](docs/PIPELINES.md).
-- [Явное восстановление content](docs/RECOVERY.md).
-- [Жизненный цикл секретов](docs/SECRET_LIFECYCLE.md).
-- [Манифест](MANIFEST.md), [безопасность](SECURITY.md), [история релизов](CHANGELOG.md).
-- [Лицензия](LICENSE.md), [зависимости и лицензирование](docs/LICENSING.md).
+With a bundler:
 
-## Работа с репозиторием
+~~~js
+import { Ulda } from 'ulda-auth/browser';
+~~~
 
-```powershell
-npm ci --ignore-scripts
-npm run release:check
-```
+This entry bundles the core and Socket.IO dependencies. Without a bundler, host `dist/ulda-library.js` with the accompanying license notices and import it from your own page using `<script type="module">`. Bare npm package names require a bundler or import map.
 
-Сборка создаётся через `npm run build`; эта команда ничего не публикует.
+## Documentation
 
-`npm test` выводит результаты и координаты тестов без произвольных сообщений,
-assertion-значений, stdout/stderr и stack traces. Тестовые origin/ключи существуют
-только во временной памяти, дампы не сохраняются. Прямой запуск другого test reporter
-обходит это ограничение; его вывод нельзя автоматически отправлять в публичные логи.
-Проверка истории Git: `npm run check:secrets`.
-Инструкция сопровождающему находится в docs/PUBLISHING.md репозитория.
+- [Usage guide](docs/GUIDE.md) — complete workflows and examples.
+- [API reference](docs/API.md) — methods, options, events and errors.
+- [Protocol](docs/PROTOCOL.md) — socket events, binary records and server requirements.
+- [Method pipelines](docs/PIPELINES.md) — internal steps for each operation.
+- [Content recovery](docs/RECOVERY.md) — explicit replacement from a verified local copy.
+- [Secret lifecycle](docs/SECRET_LIFECYCLE.md) — storage and cleanup in memory.
+- [Manifest](MANIFEST.md) — architecture, supported profile and limits.
+- [Security](SECURITY.md) — reporting vulnerabilities and the trust model.
 
-Лицензия source-available с отдельными условиями коммерческого использования;
-это не MIT/Apache. Зависимости сохраняют собственные условия.
+For repository tooling, see [development](https://github.com/ulda-io/ulda-auth/blob/main/docs/DEVELOPMENT.md) and [publishing](https://github.com/ulda-io/ulda-auth/blob/main/docs/PUBLISHING.md).
+
+## License
+
+[ULDA Library Community Source License 1.0](LICENSE.md), a source-available license with revenue and competitive-use conditions. Commercial licensing: [mark@shaposhnik.ch](mailto:mark@shaposhnik.ch).
+
+See the [licensing guide](docs/LICENSING.md) for a summary. Dependencies retain their own licenses.
