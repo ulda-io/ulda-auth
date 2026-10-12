@@ -5,6 +5,24 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { UldaError } from '../src/index.js';
+
+test('public errors reject unknown codes without coercing supplied values', () => {
+  const known = new UldaError('OFFLINE');
+  assert.equal(known.code, 'OFFLINE');
+  assert.equal(known.message, 'Transport is not ready.');
+
+  let coercions = 0;
+  const untrusted = { [Symbol.toPrimitive]() { coercions++; throw new Error('Must not coerce error input.'); } };
+  for (const input of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'unknown',
+    '', null, undefined, 42, Symbol('unknown'), untrusted]) {
+    const error = new UldaError(input);
+    assert.equal(error.name, 'UldaError');
+    assert.equal(error.code, 'SERVER_ERROR');
+    assert.equal(error.message, 'Server rejected the request.');
+  }
+  assert.equal(coercions, 0);
+});
 
 test('default reporter hides failing assertions, test names, stdout, stderr and diagnostic values', async () => {
   const folder = await mkdtemp(join(tmpdir(), 'ulda-reporter-'));

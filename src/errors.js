@@ -13,7 +13,7 @@ const messages = Object.freeze({
   EXISTS: "Name already exists.",
   NEEDS_RESYNC: "Refresh is required before further writes.",
   ROLLBACK: "Older or inconsistent state rejected.",
-  LIMIT: "Prototype limit exceeded.",
+  LIMIT: "SDK limit exceeded.",
   UNSUPPORTED: "Operation requires an agreed protocol extension.",
   SERVER_ERROR: "Server rejected the request.",
   STALE_REFERENCE: "Reference belongs to an old context.",
@@ -22,9 +22,11 @@ const messages = Object.freeze({
 });
 export class UldaError extends Error {
   constructor(code) {
-    super(messages[code] ?? messages.SERVER_ERROR);
+    const safeCode = typeof code === "string" && Object.hasOwn(messages, code)
+      ? code : "SERVER_ERROR";
+    super(messages[safeCode]);
     this.name = "UldaError";
-    this.code = code in messages ? code : "SERVER_ERROR";
+    this.code = safeCode;
   }
 }
 export const fail = (code) => {
