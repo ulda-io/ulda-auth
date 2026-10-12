@@ -30,24 +30,24 @@ for (const mode of ['X', 'S']) test(`Authenticated ${mode} plaintext still requi
 });
 
 test('First login without a local anchor rejects authenticated but inconsistent origin; no destructive recovery', async t => {
-  const server = await fixture(), sdk = new Ulda(server.url, { allowInsecureLocalhost: true });
-  t.after(async () => { await sdk.close(); await server.close(); });
+  const server = await fixture(), ulda = new Ulda(server.url, { allowInsecureLocalhost: true });
+  t.after(async () => { await ulda.close(); await server.close(); });
   const password = 'synthetic-incoming-integrity-password';
   const credentials = await masterCredentials(password), token = newToken();
   const record = { id: '1', ...sealedWire(await seal(credentials, token, newOrigin('X'), { contents: [] })) };
   const inconsistent = await inconsistentOrigin(credentials, record, token, { contents: [] });
   server.records.set('1', inconsistent);
-  await assert.rejects(sdk.connect('1', password), { code: 'CRYPTO_FAILED' });
-  assert.throws(() => sdk.snapshot(), { code: 'NOT_OPEN' });
+  await assert.rejects(ulda.connect('1', password), { code: 'CRYPTO_FAILED' });
+  assert.throws(() => ulda.snapshot(), { code: 'NOT_OPEN' });
   assert.equal(server.frames.some(x => ['create', 'update', 'delete'].includes(x.action)), false);
   assert.equal(server.records.get('1'), inconsistent);
 });
 
 test('Bad Read, delete preflight and Changed preserve the verified copy and never trigger Create/Delete', { timeout: 5000 }, async t => {
-  const server = await fixture(), sdk = new Ulda(server.url, { allowInsecureLocalhost: true });
-  t.after(async () => { await sdk.close(); await server.close(); });
-  const masterId = await sdk.register('synthetic-preserve-last-good-password');
-  await sdk.add('notes', { value: 1 });
+  const server = await fixture(), ulda = new Ulda(server.url, { allowInsecureLocalhost: true });
+  t.after(async () => { await ulda.close(); await server.close(); });
+  const masterId = await ulda.register('synthetic-preserve-last-good-password');
+  await ulda.add('notes', { value: 1 });
   const record = [...server.records.values()].find(x => x.id !== masterId);
   const payload = record.payload.slice(); payload[payload.length - 1] ^= 1;
   const invalid = { ...record, payload };
@@ -55,19 +55,19 @@ test('Bad Read, delete preflight and Changed preserve the verified copy and neve
   const badRead = () => server.faults.push({ action: 'read', match: body => body.includes(record.id),
     response: () => ({ ok: true, data: [invalid] }) });
   badRead();
-  await assert.rejects(sdk.refresh(), { code: 'CRYPTO_FAILED' });
-  assert.equal(sdk.value('notes').value, 1);
-  assert.equal(sdk.status, 'needsResync');
-  await assert.rejects(sdk.delete('notes'), { code: 'NEEDS_RESYNC' });
-  await sdk.refresh();
+  await assert.rejects(ulda.refresh(), { code: 'CRYPTO_FAILED' });
+  assert.equal(ulda.value('notes').value, 1);
+  assert.equal(ulda.status, 'needsResync');
+  await assert.rejects(ulda.delete('notes'), { code: 'NEEDS_RESYNC' });
+  await ulda.refresh();
   badRead();
-  await assert.rejects(sdk.delete('notes'), { code: 'CRYPTO_FAILED' });
-  assert.equal(sdk.value('notes').value, 1);
-  const fault = new Promise(resolve => sdk.on('error', resolve));
+  await assert.rejects(ulda.delete('notes'), { code: 'CRYPTO_FAILED' });
+  assert.equal(ulda.value('notes').value, 1);
+  const fault = new Promise(resolve => ulda.on('error', resolve));
   server.sendChanged({ updated: [invalid], deleted: [] });
   assert.equal((await fault).code, 'CRYPTO_FAILED');
-  assert.equal(sdk.status, 'needsResync');
-  assert.equal(sdk.value('notes').value, 1);
+  assert.equal(ulda.status, 'needsResync');
+  assert.equal(ulda.value('notes').value, 1);
   assert.equal(server.records.get(record.id), record);
   assert.equal(server.frames.slice(start).some(x => ['create', 'update', 'delete'].includes(x.action)), false);
 });
@@ -81,20 +81,20 @@ function damaged(record) {
 async function scenario(t, count = 2) {
   const server = await fixture(), clients = [];
   const client = () => {
-    const sdk = new Ulda(server.url, { allowInsecureLocalhost: true, timeout: 3000 });
+    const ulda = new Ulda(server.url, { allowInsecureLocalhost: true, timeout: 3000 });
     const trace = [], changes = [];
-    sdk.on('trace', event => trace.push(event));
-    sdk.on('change', event => changes.push(event));
-    clients.push(sdk);
-    return { sdk, trace, changes };
+    ulda.on('trace', event => trace.push(event));
+    ulda.on('change', event => changes.push(event));
+    clients.push(ulda);
+    return { ulda, trace, changes };
   };
   t.after(async () => {
-    for (const sdk of clients) await sdk.close();
+    for (const ulda of clients) await ulda.close();
     await server.close();
   });
   const a = client(), password = 'synthetic-batch-integrity-password';
-  const masterId = await a.sdk.register(password);
-  for (let i = 0; i < count; i++) await a.sdk.add(`item-${i}`, { value: 0 });
+  const masterId = await a.ulda.register(password);
+  for (let i = 0; i < count; i++) await a.ulda.add(`item-${i}`, { value: 0 });
   // Known test credentials let the fixture model genuine remote writes, then
   // damage one ciphertext in transit. The server cannot do this without keys.
   const masterRecord = server.records.get(masterId);
@@ -116,15 +116,15 @@ function noWritesSince(server, start) {
 
 for (const split of [false, true]) test(`Refresh rejects the last of eight resources without publishing earlier changes${split ? ', including split Read' : ''}`, { timeout: 15000 }, async t => {
   const { server, a, masterId, master } = await scenario(t, 8);
-  const before = a.sdk.snapshot(), ids = master.data.contents.map(x => x.id);
+  const before = a.ulda.snapshot(), ids = master.data.contents.map(x => x.id);
   for (const entry of master.data.contents)
     server.records.set(entry.id, await successor(entry, server.records.get(entry.id), { value: 1 }));
   if (split) server.faults.push({ action: 'read', match: ids => ids.length === 8, error: 'too_large' });
   server.faults.push({ action: 'read', match: body => body.includes(ids.at(-1)),
     response: response => ({ ...response, data: response.data.map(record => record.id === ids.at(-1) ? damaged(record) : record) }) });
   const start = server.frames.length;
-  await assert.rejects(a.sdk.refresh(), { code: 'CRYPTO_FAILED' });
-  assert.deepEqual(a.sdk.snapshot(), before);
+  await assert.rejects(a.ulda.refresh(), { code: 'CRYPTO_FAILED' });
+  assert.deepEqual(a.ulda.snapshot(), before);
   assert.deepEqual(a.trace.filter(x => x.step === 'content.staged').flatMap(x => x.ids), ids.slice(0, -1));
   assert.deepEqual(a.trace.filter(x => x.step === 'snapshot.checked').flatMap(x => x.ids), ids.slice(0, -1));
   assert.equal(a.trace.some(x => x.step === 'chain.checked'), false);
@@ -134,20 +134,20 @@ for (const split of [false, true]) test(`Refresh rejects the last of eight resou
     ? [[masterId], ids, ids.slice(0, 4), ids.slice(4)] : [[masterId], ids]);
   noWritesSince(server, start);
   // A clean reread accepts the actual remote states; no corrupt result was cached.
-  await a.sdk.refresh();
-  for (let i = 0; i < 8; i++) assert.equal(a.sdk.value(`item-${i}`).value, 1);
+  await a.ulda.refresh();
+  for (let i = 0; i < 8; i++) assert.equal(a.ulda.value(`item-${i}`).value, 1);
 });
 
 test('Changed validates every updated resource before publishing a valid first and damaged last item', { timeout: 10000 }, async t => {
   const { server, a, master } = await scenario(t);
-  const before = a.sdk.snapshot(), records = [];
+  const before = a.ulda.snapshot(), records = [];
   for (const entry of master.data.contents)
     records.push(await successor(entry, server.records.get(entry.id), { value: 1 }));
-  const start = server.frames.length, fault = new Promise(resolve => a.sdk.on('error', resolve));
+  const start = server.frames.length, fault = new Promise(resolve => a.ulda.on('error', resolve));
   server.sendChanged({ updated: [records[0], damaged(records[1])], deleted: [] });
   assert.equal((await fault).code, 'CRYPTO_FAILED');
-  assert.equal(a.sdk.status, 'needsResync');
-  assert.deepEqual(a.sdk.snapshot(), before);
+  assert.equal(a.ulda.status, 'needsResync');
+  assert.deepEqual(a.ulda.snapshot(), before);
   assert.deepEqual(a.changes, []);
   assert.ok(a.trace.some(x => x.step === 'content.opened' && x.ids[0] === records[0].id));
   assert.ok(a.trace.some(x => x.step === 'chain.checked' && x.ids[0] === records[0].id));
@@ -158,7 +158,7 @@ test('Changed validates every updated resource before publishing a valid first a
 
 test('A valid Changed master is not installed when its newly linked content fails Read validation', { timeout: 10000 }, async t => {
   const { server, a, masterId, master, credentials } = await scenario(t, 1);
-  const before = a.sdk.snapshot();
+  const before = a.ulda.snapshot();
   const entry = { id: '9000', name: 'remote-new', key: newContentSecret(), token: newToken() };
   const contentKeys = await contentCredentials(entry.key);
   const content = { id: entry.id, ...sealedWire(await seal(contentKeys, entry.token, newOrigin('X'), { value: 9 })) };
@@ -168,30 +168,30 @@ test('A valid Changed master is not installed when its newly linked content fail
   server.records.set(masterId, nextMaster);
   server.faults.push({ action: 'read', match: body => body.includes(entry.id),
     response: () => ({ ok: true, data: [damaged(content)] }) });
-  const start = server.frames.length, fault = new Promise(resolve => a.sdk.on('error', resolve));
+  const start = server.frames.length, fault = new Promise(resolve => a.ulda.on('error', resolve));
   server.sendChanged({ updated: [nextMaster], deleted: [] });
   assert.equal((await fault).code, 'CRYPTO_FAILED');
-  assert.deepEqual(a.sdk.snapshot(), before);
-  assert.throws(() => a.sdk.ref(entry.name), { code: 'NOT_FOUND' });
+  assert.deepEqual(a.ulda.snapshot(), before);
+  assert.throws(() => a.ulda.ref(entry.name), { code: 'NOT_FOUND' });
   assert.deepEqual(a.changes, []);
   assert.ok(a.trace.some(x => x.step === 'master.opened'));
   assert.equal(a.trace.some(x => x.step === 'changed.memory'), false);
   assert.deepEqual(server.frames.slice(start).map(x => x.body), [[entry.id]]);
   noWritesSince(server, start);
-  await a.sdk.refresh();
-  assert.equal(a.sdk.value(entry.name).value, 9);
+  await a.ulda.refresh();
+  assert.equal(a.ulda.value(entry.name).value, 9);
 });
 
 test('First Connect does not expose a verified master or first content when the last content is damaged', { timeout: 10000 }, async t => {
   const { server, client, masterId, password, master } = await scenario(t);
   const b = client();
-  await b.sdk.ready;
+  await b.ulda.ready;
   const lastId = master.data.contents.at(-1).id;
   server.faults.push({ action: 'read', match: body => body.includes(lastId),
     response: response => ({ ...response, data: response.data.map(record => record.id === lastId ? damaged(record) : record) }) });
   const start = server.frames.length;
-  await assert.rejects(b.sdk.connect(masterId, password), { code: 'CRYPTO_FAILED' });
-  assert.throws(() => b.sdk.snapshot(), { code: 'NOT_OPEN' });
+  await assert.rejects(b.ulda.connect(masterId, password), { code: 'CRYPTO_FAILED' });
+  assert.throws(() => b.ulda.snapshot(), { code: 'NOT_OPEN' });
   assert.ok(b.trace.some(x => x.step === 'content.staged' && x.ids[0] === master.data.contents[0].id));
   assert.equal(b.trace.some(x => x.step === 'session.memory'), false);
   assert.deepEqual(b.changes, []);
@@ -200,13 +200,13 @@ test('First Connect does not expose a verified master or first content when the 
 
 test('SuperDelete never sends Delete or closes the context when the last preflight content is damaged', { timeout: 10000 }, async t => {
   const { server, a, master } = await scenario(t);
-  const before = a.sdk.snapshot(), records = structuredClone(server.records), lastId = master.data.contents.at(-1).id;
+  const before = a.ulda.snapshot(), records = structuredClone(server.records), lastId = master.data.contents.at(-1).id;
   server.faults.push({ action: 'read', match: body => body.includes(lastId),
     response: response => ({ ...response, data: response.data.map(record => record.id === lastId ? damaged(record) : record) }) });
   const start = server.frames.length;
-  await assert.rejects(a.sdk.superDelete(), { code: 'CRYPTO_FAILED' });
-  assert.deepEqual(a.sdk.snapshot(), before);
-  assert.notEqual(a.sdk.status, 'closed');
+  await assert.rejects(a.ulda.superDelete(), { code: 'CRYPTO_FAILED' });
+  assert.deepEqual(a.ulda.snapshot(), before);
+  assert.notEqual(a.ulda.status, 'closed');
   assert.deepEqual(server.records, records);
   assert.equal(a.trace.some(x => ['superdelete.commit', 'session.clear'].includes(x.step)), false);
   noWritesSince(server, start);
@@ -217,16 +217,16 @@ test('A damaged Changed for pending Add stays private and cannot replace the loc
   let release;
   const held = new Promise(resolve => server.faults.push({ action: 'update', holdAck: send => { release = send; resolve(); } }));
   t.after(() => release?.());
-  const result = a.sdk.add('pending', { value: 1 }).then(value => ({ value }), error => ({ error }));
+  const result = a.ulda.add('pending', { value: 1 }).then(value => ({ value }), error => ({ error }));
   await held;
   const root = server.records.get(masterId);
   const credentials = await masterCredentials(password, envelope(root.payload).salt);
   const master = await open(credentials, root), entry = master.data.contents[0];
   const foreign = await successor(entry, server.records.get(entry.id), { value: 999 });
-  const start = server.frames.length, fault = new Promise(resolve => a.sdk.on('error', resolve));
+  const start = server.frames.length, fault = new Promise(resolve => a.ulda.on('error', resolve));
   server.sendChanged({ updated: [damaged(foreign)], deleted: [] });
   assert.equal((await fault).code, 'CRYPTO_FAILED');
-  assert.equal(Object.hasOwn(a.sdk.snapshot(), 'pending'), false);
+  assert.equal(Object.hasOwn(a.ulda.snapshot(), 'pending'), false);
   assert.equal(a.trace.some(x => x.step === 'changed.memory'), false);
   assert.deepEqual(a.changes, []);
   noWritesSince(server, start);
@@ -234,15 +234,15 @@ test('A damaged Changed for pending Add stays private and cannot replace the loc
   const settled = await result;
   assert.equal(settled.error, undefined);
   assert.equal(settled.value.ok, true);
-  assert.equal(a.sdk.value('pending').value, 1);
-  assert.equal(a.sdk.status, 'needsResync');
+  assert.equal(a.ulda.value('pending').value, 1);
+  assert.equal(a.ulda.status, 'needsResync');
   assert.deepEqual(a.changes, []);
   noWritesSince(server, start);
 });
 
 for (const deletedKind of ['master', 'content']) test(`A mixed Changed with damaged content cannot apply its ${deletedKind} deletion`, { timeout: 10000 }, async t => {
   const { server, a, master, masterId } = await scenario(t, 3);
-  const before = a.sdk.snapshot();
+  const before = a.ulda.snapshot();
   const first = master.data.contents[0], last = master.data.contents[2];
   const valid = await successor(first, server.records.get(first.id), { value: 1 });
   const invalid = damaged(await successor(last, server.records.get(last.id), { value: 1 }));
@@ -250,14 +250,14 @@ for (const deletedKind of ['master', 'content']) test(`A mixed Changed with dama
   // Observe both outcomes so the regression fails promptly if a premature close
   // bypasses verification instead of waiting for an error that never arrives.
   const outcome = new Promise(resolve => {
-    a.sdk.on('error', error => resolve({ error }));
-    a.sdk.on('trace', event => { if (event.step === 'session.clear') resolve({ closed: true }); });
+    a.ulda.on('error', error => resolve({ error }));
+    a.ulda.on('trace', event => { if (event.step === 'session.clear') resolve({ closed: true }); });
   });
   const start = server.frames.length;
   server.sendChanged({ updated: [valid, invalid], deleted: [deletedId] });
   assert.equal((await outcome).error?.code, 'CRYPTO_FAILED');
-  assert.equal(a.sdk.status, 'needsResync');
-  assert.deepEqual(a.sdk.snapshot(), before);
+  assert.equal(a.ulda.status, 'needsResync');
+  assert.deepEqual(a.ulda.snapshot(), before);
   assert.deepEqual(a.changes, []);
   assert.equal(a.trace.some(x => ['changed.memory', 'session.clear'].includes(x.step)), false);
   noWritesSince(server, start);

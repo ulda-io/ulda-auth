@@ -10,12 +10,12 @@ test('real client/server pipeline traces are ordered, private and do not affect 
   const client = (diagnostics = true) => {
     const transport = new SocketIoTransport(server.url, { allowInsecureLocalhost: true, diagnostics });
     transport.on('trace', record => traces.push(record));
-    const sdk = new Ulda(server.url, { transport });
-    sdk.on('trace', record => traces.push(record));
-    sdk.on('trace', record => { record.ids.push('999'); });
-    clients.push(sdk); return sdk;
+    const ulda = new Ulda(server.url, { transport });
+    ulda.on('trace', record => traces.push(record));
+    ulda.on('trace', record => { record.ids.push('999'); });
+    clients.push(ulda); return ulda;
   };
-  t.after(async () => { for (const sdk of clients) await sdk.close(); await server.close(); });
+  t.after(async () => { for (const ulda of clients) await ulda.close(); await server.close(); });
   const password = 'pipeline-secret-password', name = 'pipeline-secret-name', value = 'pipeline-secret-value';
   const creator = client();
   const master = await creator.register(password); await creator.add(name, { value });
@@ -45,11 +45,11 @@ test('server diagnostic input cannot echo arbitrary fields/text and failed decry
   const client = () => {
     const transport = new SocketIoTransport(server.url, { allowInsecureLocalhost: true, diagnostics: true });
     transport.on('trace', x => traces.push(x));
-    const sdk = new Ulda(server.url, { transport }); sdk.on('trace', x => traces.push(x)); clients.push(sdk); return sdk;
+    const ulda = new Ulda(server.url, { transport }); ulda.on('trace', x => traces.push(x)); clients.push(ulda); return ulda;
   };
-  t.after(async () => { for (const sdk of clients) await sdk.close(); await server.close(); });
-  const sdk = client(); const id = await sdk.register('original-synthetic-password');
-  await sdk.close(); traces.length = 0;
+  t.after(async () => { for (const ulda of clients) await ulda.close(); await server.close(); });
+  const ulda = client(); const id = await ulda.register('original-synthetic-password');
+  await ulda.close(); traces.length = 0;
   const wrong = client(); await wrong.ready;
   for (const socket of server.io.sockets.sockets.values()) {
     socket.emit('ulda:diagnostic', { action: 'read', step: 'private-reflected-secret', ids: [], count: 0 });

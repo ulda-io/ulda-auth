@@ -14,8 +14,8 @@ try {
   backend = await fixture();
   http = createServer((request, response) => {
     response.setHeader('Cache-Control', 'no-store');
-    response.setHeader('Content-Type', request.url === '/sdk.js' ? 'text/javascript' : 'text/html');
-    response.end(request.url === '/sdk.js' ? bundle : '<!doctype html><title>Synthetic SDK package check</title>');
+    response.setHeader('Content-Type', request.url === '/ulda.js' ? 'text/javascript' : 'text/html');
+    response.end(request.url === '/ulda.js' ? bundle : '<!doctype html><title>Synthetic SDK package check</title>');
   });
   await new Promise(resolve => http.listen(0, '127.0.0.1', resolve));
   const results = [];
@@ -24,7 +24,7 @@ try {
     const page = await activeBrowser.newPage();
     await page.goto('http://127.0.0.1:' + http.address().port);
     const passed = await page.evaluate(async endpoint => {
-      const { Ulda } = await import('/sdk.js');
+      const { Ulda } = await import('/ulda.js');
       const a = new Ulda(endpoint, { allowInsecureLocalhost: true });
       const b = new Ulda(endpoint, { allowInsecureLocalhost: true });
       try {

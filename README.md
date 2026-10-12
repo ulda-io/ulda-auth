@@ -22,19 +22,19 @@ The application supplies the server URL and a password obtained from the user.
 import { Ulda } from 'ulda-auth';
 
 export async function createNotebook(endpoint, password) {
-  const sdk = new Ulda(endpoint);
+  const ulda = new Ulda(endpoint);
 
   try {
-    await sdk.ready;
-    const masterId = await sdk.register(password);
+    await ulda.ready;
+    const masterId = await ulda.register(password);
 
-    await sdk.add('notes', { title: 'First note', done: false });
-    await sdk.data.notes.title.update('Updated title');
+    await ulda.add('notes', { title: 'First note', done: false });
+    await ulda.data.notes.title.update('Updated title');
 
-    const note = sdk.value('notes'); // An independent JSON copy.
+    const note = ulda.value('notes'); // An independent JSON copy.
     return { masterId, note };
   } finally {
-    await sdk.close();
+    await ulda.close();
   }
 }
 ~~~
@@ -47,12 +47,12 @@ To open an existing catalog:
 import { Ulda } from 'ulda-auth';
 
 export async function openNotebook(endpoint, masterId, password) {
-  const sdk = new Ulda(endpoint);
+  const ulda = new Ulda(endpoint);
   try {
-    await sdk.connect(masterId, password);
-    return sdk; // The caller owns this session and must close it when finished.
+    await ulda.connect(masterId, password);
+    return ulda; // The caller owns this session and must close it when finished.
   } catch (error) {
-    await sdk.close();
+    await ulda.close();
     throw error;
   }
 }
@@ -63,23 +63,23 @@ Resource IDs are decimal **strings**, not JavaScript numbers.
 ## Working with data
 
 ~~~js
-const notes = sdk.ref('notes');
+const notes = ulda.ref('notes');
 
 const title = notes.title.get();
 await notes.title.update('Another title');
-await sdk.set('notes', ['done'], true);
+await ulda.set('notes', ['done'], true);
 
 // Editing a returned copy does not write to the server.
-const copy = sdk.snapshot();
+const copy = ulda.snapshot();
 
-const unsubscribe = sdk.on('change', () => {
-  const current = sdk.snapshot();
+const unsubscribe = ulda.on('change', () => {
+  const current = ulda.snapshot();
   // Render or otherwise use the current application data.
 });
 
 // Later:
 unsubscribe();
-await sdk.close();
+await ulda.close();
 ~~~
 
 References are explicit: use `.get()` to read a value and await `.update()` or `.delete()` to change it. Assigning to a reference does not save data and is rejected.

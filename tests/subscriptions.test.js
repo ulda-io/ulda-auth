@@ -131,14 +131,14 @@ test('successful Create subscribes even if ACK is lost; rejected Create does not
 
 test('SDK add sends only Create and Update; subscriber receives later edits without subscription Read', async t => {
   const server=await fixture(), clients=[];
-  const client=()=>{const sdk=new Ulda(server.url,{allowInsecureLocalhost:true});clients.push(sdk);return sdk;};
-  t.after(async()=>{for(const sdk of clients) await sdk.close();await server.close();});
-  const sdk=client(), password='synthetic-auto-subscribe';
-  const master=await sdk.register(password);
+  const client=()=>{const ulda=new Ulda(server.url,{allowInsecureLocalhost:true});clients.push(ulda);return ulda;};
+  t.after(async()=>{for(const ulda of clients) await ulda.close();await server.close();});
+  const ulda=client(), password='synthetic-auto-subscribe';
+  const master=await ulda.register(password);
   const start=server.frames.length;
-  assert.equal((await sdk.add('test',{value:1})).subscriptionReady,true);
+  assert.equal((await ulda.add('test',{value:1})).subscriptionReady,true);
   assert.deepEqual(server.frames.slice(start).map(x=>x.action),['create','update']);
   const other=client(); await other.connect(master,password); await other.update('test',{value:2});
-  for(let i=0;i<100&&sdk.value('test').value!==2;i++) await new Promise(resolve=>setTimeout(resolve,10));
-  assert.equal(sdk.value('test').value,2);
+  for(let i=0;i<100&&ulda.value('test').value!==2;i++) await new Promise(resolve=>setTimeout(resolve,10));
+  assert.equal(ulda.value('test').value,2);
 });

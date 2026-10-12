@@ -9,25 +9,25 @@ import { writePacket, deletePacket, deletionProof, outgoing, requestShape } from
 async function setup(t, timeout = 1000) {
   const server = await fixture();
   const clients = [];
-  const client = () => { const sdk = new Ulda(server.url, { allowInsecureLocalhost: true, timeout }); clients.push(sdk); return sdk; };
-  t.after(async () => { for (const sdk of clients) await sdk.close(); await server.close(); });
-  const sdk = client(), password = 'synthetic-delete-password';
-  const master = await sdk.register(password);
-  await sdk.add('private-delete-name', { secret: 'synthetic-private-value' });
+  const client = () => { const ulda = new Ulda(server.url, { allowInsecureLocalhost: true, timeout }); clients.push(ulda); return ulda; };
+  t.after(async () => { for (const ulda of clients) await ulda.close(); await server.close(); });
+  const ulda = client(), password = 'synthetic-delete-password';
+  const master = await ulda.register(password);
+  await ulda.add('private-delete-name', { secret: 'synthetic-private-value' });
   const content = [...server.records.keys()].find(id => id !== master);
-  return { sdk, client, server, password, master, content };
+  return { ulda, client, server, password, master, content };
 }
 async function until(fn) {
   for (let i = 0; i < 150; i++) { if (fn()) return; await new Promise(resolve => setTimeout(resolve, 10)); }
   assert.fail('Condition not reached');
 }
 test('delete removes the content and encrypted catalog entry for both subscribers; reopen works', async t => {
-  const { sdk, client, server, password, master, content } = await setup(t);
+  const { ulda, client, server, password, master, content } = await setup(t);
   const other = client(); await other.connect(master, password);
-  await sdk.data['private-delete-name'].delete();
+  await ulda.data['private-delete-name'].delete();
   assert.equal(server.records.has(content), false);
   assert.equal(server.records.has(master), true);
-  assert.deepEqual(Object.keys(sdk.snapshot()), []);
+  assert.deepEqual(Object.keys(ulda.snapshot()), []);
   await until(() => Object.keys(other.snapshot()).length === 0);
   assert.equal(server.watchers.has(content), false);
   const packet = server.frames.find(x => x.action === 'delete').body;
@@ -64,28 +64,28 @@ test('mixed Delete verifies every witness before deleting anything; duplicate ID
 });
 
 for (const dropRequest of [false, true]) test(`unknown Delete is not replayed; ${dropRequest ? 'uncommitted state stays blocked' : 'committed state is recovered by Read'}`, async t => {
-  const { sdk, server, content } = await setup(t, 250);
+  const { ulda, server, content } = await setup(t, 250);
   server.faults.push({ action: 'delete', dropRequest, dropAck: !dropRequest, dropChanged: true });
-  await assert.rejects(sdk.delete('private-delete-name'), { code: 'UNKNOWN_OUTCOME' });
+  await assert.rejects(ulda.delete('private-delete-name'), { code: 'UNKNOWN_OUTCOME' });
   assert.equal(server.records.has(content), dropRequest);
-  assert.throws(() => sdk.add('blocked', {}), { code: 'NEEDS_RESYNC' });
-  await sdk.refresh();
+  assert.throws(() => ulda.add('blocked', {}), { code: 'NEEDS_RESYNC' });
+  await ulda.refresh();
   assert.equal(server.frames.filter(x => x.action === 'delete').length, 1);
   if (dropRequest) {
-    assert.equal(sdk.status, 'needsResync');
-    assert.deepEqual(Object.keys(sdk.snapshot()), ['private-delete-name']);
+    assert.equal(ulda.status, 'needsResync');
+    assert.deepEqual(Object.keys(ulda.snapshot()), ['private-delete-name']);
   } else {
-    assert.equal(sdk.status, 'open'); assert.deepEqual(Object.keys(sdk.snapshot()), []);
+    assert.equal(ulda.status, 'open'); assert.deepEqual(Object.keys(ulda.snapshot()), []);
   }
 });
 
 test('Delete rejection leaves content/catalog intact and prevents blind continuation', async t => {
-  const { sdk, server } = await setup(t);
+  const { ulda, server } = await setup(t);
   const original = JSON.stringify([...server.records]);
   server.faults.push({ action: 'delete', error: 'conflict' });
-  await assert.rejects(sdk.delete('private-delete-name'), { code: 'CONFLICT' });
+  await assert.rejects(ulda.delete('private-delete-name'), { code: 'CONFLICT' });
   assert.equal(JSON.stringify([...server.records]), original);
-  assert.equal(sdk.status, 'needsResync');
-  await sdk.refresh(); await sdk.delete('private-delete-name');
-  assert.deepEqual(Object.keys(sdk.snapshot()), []);
+  assert.equal(ulda.status, 'needsResync');
+  await ulda.refresh(); await ulda.delete('private-delete-name');
+  assert.deepEqual(Object.keys(ulda.snapshot()), []);
 });

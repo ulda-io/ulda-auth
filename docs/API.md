@@ -18,7 +18,7 @@ Data is defensively copied. Returned object copies may have a null prototype; us
 ## Constructor
 
 ~~~js
-const sdk = new Ulda(endpoint, options);
+const ulda = new Ulda(endpoint, options);
 ~~~
 
 The constructor begins connection establishment. The standard transport accepts HTTPS URLs without credentials, query or fragment. HTTP is allowed only for an explicit loopback development connection.
@@ -87,7 +87,7 @@ If the request outcome is unknown, no successful master ID is returned. The serv
 
 Open an existing master and its referenced content. Requires no existing/opening master. Password rules match `register`.
 
-The master, catalog and required content are verified before the new session is published. Returns the same kind of reference tree as `sdk.data`. Wrong credentials or corrupted ciphertext can both produce `CRYPTO_FAILED`.
+The master, catalog and required content are verified before the new session is published. Returns the same kind of reference tree as `ulda.data`. Wrong credentials or corrupted ciphertext can both produce `CRYPTO_FAILED`.
 
 A new concurrent integrity fault prevents the older read from opening the context. An explicit new connect performs a new read.
 
@@ -165,14 +165,14 @@ Requires a verified local source, a live connection and no competing local write
 
 ## References
 
-`sdk.ref(name)`, `sdk.data[name]` and `sdk.data.field(name)` address the same content.
+`ulda.ref(name)`, `ulda.data[name]` and `ulda.data.field(name)` address the same content.
 
 | Member | Behavior |
 |---|---|
 | `get()` | Read an independent JSON copy |
 | `toJSON()` | Same local read; used by explicit JSON serialization |
 | `update(value)` | Update the addressed node |
-| `delete()` | Remove the node; at content root, call sdk.delete |
+| `delete()` | Remove the node; at content root, call ulda.delete |
 | `field(key)` | Address a child with a dynamic or reserved name |
 | `reference.key` / `reference[index]` | Address an ordinary child |
 
@@ -185,7 +185,7 @@ Old references fail with `STALE_REFERENCE` after their content is replaced/delet
 ## Events
 
 ~~~js
-const unsubscribe = sdk.on('status', status => {
+const unsubscribe = ulda.on('status', status => {
   // Keep the handler synchronous, or handle its own asynchronous failures.
 });
 ~~~
@@ -243,7 +243,7 @@ const transport = new SocketIoTransport(endpoint, { timeout: 10_000 });
 const stopTrace = transport.on('trace', record => {
   // IDs, sizes, fixed event codes and timings; no plaintext.
 });
-const sdk = new Ulda(endpoint, { transport });
+const ulda = new Ulda(endpoint, { transport });
 ~~~
 
 Options: timeout, allowInsecureLocalhost and diagnostics (false by default). Enabling diagnostics allows optional `ulda:diagnostic` events from a compatible server. It is not an authentication option.

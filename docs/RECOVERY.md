@@ -9,8 +9,8 @@ Use this action when a content resource cannot be obtained in a valid form but t
 Recovery may discard newer changes missing from the local source. Let the application or user make that decision. No merge is performed.
 
 ~~~js
-const result = await sdk.recoverContent('notes');
-const current = sdk.ref('notes');
+const result = await ulda.recoverContent('notes');
+const current = ulda.ref('notes');
 ~~~
 
 Result:

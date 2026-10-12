@@ -39,15 +39,15 @@ test("SDK trace correlates actual requests/ACKs and excludes names, passwords, p
   // A subscriber can neither alter trace records for later observers nor interrupt SDK work.
   transport.on("trace", record => { record.phase = "mutated"; });
   transport.on("trace", record => { record.items?.push({ id: "999" }); });
-  const sdk = new Ulda(server.url, { transport });
-  t.after(() => sdk.close());
+  const ulda = new Ulda(server.url, { transport });
+  t.after(() => ulda.close());
   const password = "trace-private-password-marker";
-  const masterId = await sdk.register(password);
-  await sdk.add("trace-private-content-name", { secret: "trace-private-payload-marker" });
-  await sdk.update("trace-private-content-name", { secret: "trace-private-updated-marker" });
-  await sdk.refresh();
+  const masterId = await ulda.register(password);
+  await ulda.add("trace-private-content-name", { secret: "trace-private-payload-marker" });
+  await ulda.update("trace-private-content-name", { secret: "trace-private-updated-marker" });
+  await ulda.refresh();
   assert.equal(traces.some(x => x.phase === "push"), false);
-  await sdk.close();
+  await ulda.close();
   const sends = traces.filter(x => x.phase === "send");
   assert.equal(sends.length, server.frames.length);
   assert.deepEqual(sends.map(x => x.event), server.frames.map(x => `ulda:${x.action}`));

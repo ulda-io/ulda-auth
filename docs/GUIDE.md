@@ -5,7 +5,7 @@
 ~~~js
 import { Ulda, UldaError } from 'ulda-auth';
 
-const sdk = new Ulda(endpoint, {
+const ulda = new Ulda(endpoint, {
   timeout: 10_000,
   reconnect: {
     maxAttempts: 5,
@@ -16,7 +16,7 @@ const sdk = new Ulda(endpoint, {
   },
 });
 
-await sdk.ready;
+await ulda.ready;
 ~~~
 
 `endpoint` is your HTTPS ULDA server URL. The constructor starts a single Socket.IO WebSocket connection. `ready` waits for the connection and `ulda:hello` acknowledgement; it does not open a master.
@@ -24,19 +24,19 @@ await sdk.ready;
 For local development only:
 
 ~~~js
-const sdk = new Ulda('http://127.0.0.1:3000', {
+const ulda = new Ulda('http://127.0.0.1:3000', {
   allowInsecureLocalhost: true,
 });
 ~~~
 
-The endpoint must not contain credentials, a query or a fragment. Pass IDs as decimal strings. Close failed or unused instances with `await sdk.close()`.
+The endpoint must not contain credentials, a query or a fragment. Pass IDs as decimal strings. Close failed or unused instances with `await ulda.close()`.
 
 ## 2. Create or open a master
 
 Create a new encrypted catalog:
 
 ~~~js
-const masterId = await sdk.register(password);
+const masterId = await ulda.register(password);
 ~~~
 
 The password comes from your application's input flow; do not hardcode a real password. On success, the SDK opens the exact local master it just created and returns its server-assigned ID. There is no extra read or second password derivation.
@@ -46,7 +46,7 @@ Present or save `masterId` through the application. The SDK does not maintain an
 For an existing master, use a fresh instance and call:
 
 ~~~js
-await sdk.connect(masterId, password);
+await ulda.connect(masterId, password);
 ~~~
 
 The SDK reads and decrypts the master, obtains content IDs and secrets from its private catalog, and reads and verifies those contents. No partial catalog becomes the active session if one required resource fails verification.
@@ -56,7 +56,7 @@ Use `register` or `connect` to establish a session, not to switch between master
 ## 3. Create content
 
 ~~~js
-await sdk.add('profile', {
+await ulda.add('profile', {
   displayName: 'Ada',
   preferences: { theme: 'light' },
   tags: ['personal', 'work'],
@@ -74,21 +74,21 @@ The reservation and final update are two separate commits. Do not automatically 
 ## 4. Read local data
 
 ~~~js
-const profile = sdk.value('profile');
-const theme = sdk.value('profile', ['preferences', 'theme']);
-const allContent = sdk.snapshot();
+const profile = ulda.value('profile');
+const theme = ulda.value('profile', ['preferences', 'theme']);
+const allContent = ulda.snapshot();
 ~~~
 
 These methods read the last verified **local** state and do not send a Read request. They return independent JSON copies. Modifying a copy does not update the SDK or server.
 
-Use `await sdk.refresh()` when you need to read and verify the server's current snapshot. Local reads remain available while an open session is disconnected or needs resynchronization, but their data may be stale.
+Use `await ulda.refresh()` when you need to read and verify the server's current snapshot. Local reads remain available while an open session is disconnected or needs resynchronization, but their data may be stale.
 
 ## 5. Update a resource or a field
 
 Replace the entire content value:
 
 ~~~js
-await sdk.update('profile', {
+await ulda.update('profile', {
   displayName: 'Ada',
   preferences: { theme: 'dark' },
   tags: ['personal'],
@@ -98,8 +98,8 @@ await sdk.update('profile', {
 Update a nested value:
 
 ~~~js
-await sdk.set('profile', ['preferences', 'theme'], 'light');
-await sdk.set('profile', ['tags', 0], 'private');
+await ulda.set('profile', ['preferences', 'theme'], 'light');
+await ulda.set('profile', ['tags', 0], 'private');
 ~~~
 
 Intermediate path components must already exist. An object field may be added at the final path component. An array index must already exist; replacing an array is the way to append elements.
@@ -107,8 +107,8 @@ Intermediate path components must already exist. An object field may be added at
 Remove a field or array element:
 
 ~~~js
-await sdk.remove('profile', ['preferences', 'theme']);
-await sdk.remove('profile', ['tags', 0]);
+await ulda.remove('profile', ['preferences', 'theme']);
+await ulda.remove('profile', ['tags', 0]);
 ~~~
 
 Array removal uses splice semantics: later elements shift left. `remove(name, [])` is not supported; use `delete(name)` to delete the content resource.
@@ -118,8 +118,8 @@ Each update prepares and encrypts the next resource state. It becomes confirmed 
 ## 6. Use explicit references
 
 ~~~js
-const profile = sdk.ref('profile');
-// Equivalent: const profile = sdk.data.profile;
+const profile = ulda.ref('profile');
+// Equivalent: const profile = ulda.data.profile;
 
 const displayName = profile.displayName.get();
 await profile.displayName.update('Grace');
@@ -132,28 +132,28 @@ References also work for primitives and arrays. A reference to `false` is still 
 Use `field` when a property name conflicts with a reference method:
 
 ~~~js
-await sdk.add('settings', { update: 'manual' });
-const value = sdk.data.settings.field('update').get();
+await ulda.add('settings', { update: 'manual' });
+const value = ulda.data.settings.field('update').get();
 ~~~
 
-Use `sdk.data.field(name)` or `sdk.ref(name)` for dynamic content names. Do not assign properties, use the JavaScript `delete` operator or call `Object.defineProperty` on references.
+Use `ulda.data.field(name)` or `ulda.ref(name)` for dynamic content names. Do not assign properties, use the JavaScript `delete` operator or call `Object.defineProperty` on references.
 
 References are bound to the original content ID and session. Deleting and recreating content with the same name does not revive an old reference. Get a new reference after recovery or reopening.
 
 ## 7. Receive updates
 
 ~~~js
-const stopChanges = sdk.on('change', (event) => {
+const stopChanges = ulda.on('change', (event) => {
   // event carries resource IDs and a kind, not decrypted content.
-  const current = sdk.snapshot();
+  const current = ulda.snapshot();
   // Update your application's view.
 });
 
-const stopStatus = sdk.on('status', (status) => {
+const stopStatus = ulda.on('status', (status) => {
   // Reflect open, disconnected, reconnecting or needsResync in the UI.
 });
 
-const stopErrors = sdk.on('error', (error) => {
+const stopErrors = ulda.on('error', (error) => {
   // Handle error.code; avoid logging application secrets.
 });
 ~~~
@@ -170,13 +170,13 @@ Wrap the method call itself and its await in try/catch: some invalid input is re
 
 ~~~js
 try {
-  await sdk.set('profile', ['displayName'], proposedName);
+  await ulda.set('profile', ['displayName'], proposedName);
 } catch (error) {
   if (!(error instanceof UldaError)) throw error;
 
   if (error.code === 'CONFLICT' || error.code === 'NEEDS_RESYNC') {
-    await sdk.refresh();
-    // Inspect sdk.status and sdk.value('profile').
+    await ulda.refresh();
+    // Inspect ulda.status and ulda.value('profile').
     // Ask the application/user to resolve the intended change.
   } else if (error.code === 'UNKNOWN_OUTCOME') {
     // The write may have committed. Do not automatically send it again.
@@ -196,11 +196,11 @@ A newer server snapshot may be accepted without all intermediate chain steps. Th
 After an unintentional disconnect from a previously established connection, the SDK makes bounded reconnect attempts and verified reads. It does not replay Create, Update or Delete.
 
 ~~~js
-const stopReconnect = sdk.on('reconnect', (event) => {
+const stopReconnect = ulda.on('reconnect', (event) => {
   // phase: waiting, attempt, restored, stopped or cancelled
 });
 
-await sdk.reconnect(); // Explicit recovery; joins a running cycle.
+await ulda.reconnect(); // Explicit recovery; joins a running cycle.
 ~~~
 
 Set `reconnect: false` to disable automatic attempts while retaining manual reconnect. A failed initial connection is not automatically retried. The retry budget, attempt limits and events are described in the [API](API.md).
@@ -210,13 +210,13 @@ Reconnect restores subscriptions by reading again; it does not restore a server-
 ## 10. Choose X or S
 
 ~~~js
-await sdk.add('settings', { theme: 'light' }, 'X');
-await sdk.add('progress', { count: 0 }, 'S');
+await ulda.add('settings', { theme: 'light' }, 'X');
+await ulda.add('progress', { count: 0 }, 'S');
 
 await Promise.all([
-  sdk.update('progress', { count: 1 }),
-  sdk.update('progress', { count: 2 }),
-  sdk.update('progress', { count: 3 }),
+  ulda.update('progress', { count: 1 }),
+  ulda.update('progress', { count: 2 }),
+  ulda.update('progress', { count: 3 }),
 ]);
 ~~~
 
@@ -227,7 +227,7 @@ S is not a CRDT, cross-client merge strategy or unlimited stream. Foreign change
 ## 11. Delete data
 
 ~~~js
-await sdk.delete('profile');
+await ulda.delete('profile');
 ~~~
 
 The SDK refreshes first, then atomically deletes the content and updates the master's catalog. If another master references that content ID, it is affected too: the server cannot inspect encrypted catalogs to discover shared references.
@@ -235,7 +235,7 @@ The SDK refreshes first, then atomically deletes the content and updates the mas
 To delete the complete catalog and all content it currently lists:
 
 ~~~js
-await sdk.superDelete();
+await ulda.superDelete();
 ~~~
 
 `superDelete` refreshes and validates the set, sends one atomic deletion batch, and closes the SDK on success. A missing or invalid required content can stop it before deletion. This is not a blind cleanup operation for damaged catalogs.
@@ -243,8 +243,8 @@ await sdk.superDelete();
 ## 12. Recover damaged content explicitly
 
 ~~~js
-const recovery = await sdk.recoverContent('notes');
-const newReference = sdk.ref('notes');
+const recovery = await ulda.recoverContent('notes');
+const newReference = ulda.ref('notes');
 ~~~
 
 This replaces one catalog link with a newly created resource built from the SDK's last confirmed local copy. The old resource is preserved, not added as a second link. Recovery can lose newer changes absent from that copy. It is not password recovery and does not recreate masters.
@@ -257,7 +257,7 @@ Read [Content recovery](RECOVERY.md) before implementing this action.
 stopChanges();
 stopStatus();
 stopErrors();
-await sdk.close();
+await ulda.close();
 ~~~
 
 Close cancels SDK waits, invalidates references, wipes known owned origin buffers and releases keys and catalog references. It makes a best-effort session-close request and disconnects. It does not delete data or undo an already sent write.
@@ -273,9 +273,9 @@ type Workspace = {
   notes: { title: string; done: boolean };
 };
 
-const sdk = new Ulda<Workspace>(endpoint);
-await sdk.connect(masterId, password);
-await sdk.data.notes.done.update(true);
+const ulda = new Ulda<Workspace>(endpoint);
+await ulda.connect(masterId, password);
+await ulda.data.notes.done.update(true);
 ~~~
 
 The implementation remains JavaScript. Declarations describe the application's expected shape; they do not add server-side schema validation or validate arbitrary input against your TypeScript type.
