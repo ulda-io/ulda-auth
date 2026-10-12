@@ -120,7 +120,7 @@ jobs:
     needs: package
     if: github.event_name == 'push' && github.ref_type == 'tag' && github.event.repository.private == false
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     environment: npm
     permissions:
       actions: read
@@ -157,12 +157,18 @@ jobs:
           cd "$RUNNER_TEMP/ulda-publish"
           printf '%s  %s\n' "$RELEASE_SHA256" "$RELEASE_FILE" | sha256sum --check --strict
           npm publish "$RELEASE_FILE" --ignore-scripts --access public --tag latest --provenance --registry=https://registry.npmjs.org/
-          for attempt in 1 2 3 4 5; do
-            if published_integrity="$(npm view "ulda-auth@$RELEASE_VERSION" dist.integrity --registry=https://registry.npmjs.org/)" && [ "$published_integrity" = "$RELEASE_INTEGRITY" ]; then
+          # npm may process a successful upload for several minutes. Poll only
+          # reads, bypass stale local cache, and bound each network request.
+          for attempt in {1..30}; do
+            if published_integrity="$(npm view "ulda-auth@$RELEASE_VERSION" dist.integrity --registry=https://registry.npmjs.org/ --prefer-online --fetch-retries=0 --fetch-timeout=10000)" && [ -n "$published_integrity" ]; then
+              if [ "$published_integrity" != "$RELEASE_INTEGRITY" ]; then
+                echo 'Published archive integrity mismatch; investigate before any retry.' >&2
+                exit 1
+              fi
               printf 'Published ulda-auth@%s; registry integrity matches the checked archive.\n' "$RELEASE_VERSION" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            sleep 5
+            if [ "$attempt" -lt 30 ]; then sleep 10; fi
           done
           echo 'Registry integrity not confirmed. Inspect the published version before retrying; do not republish blindly.' >&2
           exit 1

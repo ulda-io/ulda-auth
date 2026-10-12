@@ -140,4 +140,6 @@ The Node.js 24 publishing runner must provide npm 11.5.1 or later; the publishin
 
 If an npm command fails after upload, inspect the exact version in the registry first. Do not blindly retry a publication, move an already published tag or reuse the version. A failed integrity check after publication does not undo the upload.
 
+npm can accept an upload before the new version becomes readable. After a successful publish, the workflow makes up to 30 read-only integrity checks, ten seconds apart, with a ten-second network timeout per check and fresh registry metadata. A returned integrity mismatch fails immediately. If the version is still unavailable when the checks end, inspect the registry later; do not rerun the publishing job just to repeat verification. The earlier failed run remains historical even if a later registry check confirms the exact archive.
+
 References: [npm publish](https://docs.npmjs.com/cli/v11/commands/npm-publish/), [Trusted Publishing](https://docs.npmjs.com/trusted-publishers/), [npm trust prerequisites](https://docs.npmjs.com/cli/v11/commands/npm-trust/).
