@@ -32,7 +32,7 @@ The integration command needs a running compatible local server; the browser com
 
 The .local/release receipts must refer to the same SHA-256. If a packaged file changes, rebuild and repeat the relevant package checks. Keep release evidence outside user documentation and do not upload raw test diagnostics.
 
-`test:publish` verifies the archive against package-check.json and package.json, then invokes npm with --dry-run --ignore-scripts. It never performs an actual publish and does not confirm account permissions or reserve the package name.
+`test:publish` verifies the archive against package-check.json and package.json, then invokes npm with --dry-run --ignore-scripts --force. The force flag allows a rehearsal after that version has already been published: npm 11 otherwise rejects it even in dry-run. It never disables dry-run, and the real publication command does not use force. This check does not confirm account permissions, version availability or reserve the package name.
 
 ## First publication: authenticate and publish
 

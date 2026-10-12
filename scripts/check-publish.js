@@ -27,8 +27,11 @@ try {
   const childEnv = { ...process.env, NODE_OPTIONS: '', NODE_PATH: '', DEBUG: '' };
   delete childEnv.NODE_TEST_CONTEXT;
   delete childEnv.NODE_V8_COVERAGE;
+  // npm 11 rejects already published versions even in dry-run. This check
+  // validates packaging only; --force bypasses that guard, never --dry-run.
+  // The real publisher must not inherit this flag or bypass version uniqueness.
   const result = spawnSync(process.execPath, [npm, 'publish', join(folder, filename),
-    '--dry-run', '--ignore-scripts', '--json', '--access=public', '--tag=latest',
+    '--dry-run', '--ignore-scripts', '--force', '--json', '--access=public', '--tag=latest',
     '--registry=https://registry.npmjs.org/'],
     { cwd: root, env: childEnv, encoding: 'utf8', timeout: 120000, maxBuffer: 4 * 1024 * 1024 });
   assert.equal(result.status, 0);
@@ -46,7 +49,7 @@ try {
     integrity: summary.integrity, dryRun: true, published: false,
     registry: pkg.publishConfig.registry, tag: pkg.publishConfig.tag,
     checkedAt: new Date().toISOString(),
-    limits: ['does not establish npm login, package-name ownership or publish permission'] };
+    limits: ['does not establish npm login, package-name ownership, version availability or publish permission'] };
   writeFileSync(join(folder, 'publish-check.json'), JSON.stringify(receipt, null, 2) + '\n');
   console.log(JSON.stringify(receipt, null, 2));
 } catch {
