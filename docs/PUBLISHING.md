@@ -86,6 +86,21 @@ Tag releases must match `package.json`, `package-lock.json` and the accepted rel
 
 For a rehearsal, select **Actions → Publish to npm → Run workflow → main**. A manual run executes the checks and uploads the archive and safe package receipts; it never publishes, including after npm authorization has been configured. Raw test logs and local credentials are not uploaded as artifacts. Artifacts are retained for seven days.
 
+### Check CI without releasing another version
+
+A change to this maintainer guide can exercise the pipeline without changing the npm package: this file is excluded from the archive. Commit the intended change, push `main`, and wait for all four **SDK checks** jobs. Then run the publication rehearsal:
+
+~~~sh
+gh workflow run publish.yml --repo ulda-io/ulda-auth --ref main
+gh run list --repo ulda-io/ulda-auth --workflow publish.yml
+~~~
+
+For the selected commit, expect four successful test jobs, a successful **Prepare verified archive** job, and **Publish verified archive with OIDC** marked **skipped**. Download the archive and compare its SHA-256 with `.github/npm-release.json` and the accepted local archive.
+
+This verifies CI, reproducible packaging and the publish dry-run. It does not exercise the npm OIDC exchange or prove permission to perform a real publication. Saving a trusted publisher or passing a dry-run does not establish that result either. Test actual publication only with an intentionally prepared new version and an authorized release tag; never reuse an already published version just to test the workflow.
+
+If the first release used npm staged publishing, a public `0.0.0-stage` placeholder may remain in the version list. It is not an incomplete upload of the production release. Check the active version with `npm view ulda-auth dist-tags --json`; normal installation follows the `latest` tag. See [npm staged publishing](https://docs.npmjs.com/staged-publishing/).
+
 ### Accept the archive
 
 After the applicable package, integration, fault and load checks, copy the accepted name, version, filename and SHA-256 from `.local/release/publish-check.json` into `.github/npm-release.json`. Review and commit this record with the release. It is outside the npm package, so changing it does not change the archive it identifies.
@@ -102,11 +117,16 @@ After the package exists, configure **npm → ulda-auth → Settings → Trusted
 | Repository | `ulda-auth` |
 | Workflow filename | `publish.yml` |
 | Environment | `npm` |
+| Label, if offered | Optional descriptive text, such as `GitHub releases` |
 | Allowed action | Direct publishing with `npm publish` |
+
+Use the exact GitHub owner/repository identifiers above; the organization field here does not assign npm package ownership. The environment must match the workflow's `npm` value. With a compatible CLI (npm 11.15.0 or later), `npm trust list ulda-auth --json` reads the saved publisher configuration; it does not publish a package or validate an OIDC exchange.
 
 Use the filename alone, not `.github/workflows/publish.yml`. npm requires a newly configured publisher to complete its first successful publication within two days; configure it close to the next release, or recreate an expired configuration. Successful configuration is not proof of successful publishing authorization.
 
 In GitHub, configure **Settings → Environments → npm** with required maintainer review and a deployment policy that allows release tags (`v*`) only. Some protection rules depend on repository visibility and the GitHub plan. Confirm those rules before enabling releases. The workflow does not change repository visibility or create release tags by itself.
+
+GitHub requires approval from one of the listed reviewers, not all of them. With **Prevent self-review** disabled, the person who initiated the deployment can approve it. These GitHub review permissions are separate from npm maintainer or organization-team permissions. See [GitHub deployment environments](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments).
 
 ### Subsequent releases
 
