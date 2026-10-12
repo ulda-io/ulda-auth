@@ -1,6 +1,6 @@
 {
   "name": "ulda-auth",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Client SDK for encrypted JSON resources over ULDA and Socket.IO",
   "license": "SEE LICENSE IN LICENSE.md",
   "type": "module",
