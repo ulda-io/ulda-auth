@@ -106,16 +106,38 @@ for (const phase of ['waiting', 'hello', 'read']) test(`Close during recovery ${
 
 test('Whole-cycle deadline bounds a pending hello; late success cannot restore it', { timeout: 10000 }, async t => {
   const { ulda, server, events, cut } = await scenario(t, { ...fast, budget: 100 });
-  let deliver;
-  server.faults.push({ action: 'hello', holdAck: fn => { deliver = fn; } });
-  cut();
-  await until(() => events.some(x => x.phase === 'stopped'));
-  assert.equal(events.find(x => x.phase === 'stopped').code, 'TIMEOUT');
-  assert.equal(events.filter(x => x.phase === 'attempt').length, 1);
-  deliver(); await sleep(40);
-  assert.notEqual(ulda.status, 'open');
-  await ulda.reconnect();
-  assert.equal(ulda.status, 'open');
+  const held = Promise.withResolvers(), stopped = Promise.withResolvers();
+  const realTimeout = globalThis.setTimeout;
+  const off = ulda.on('reconnect', event => {
+    if (event.phase === 'stopped') stopped.resolve(event);
+  });
+  server.faults.push({ action: 'hello', holdAck: held.resolve });
+  // Advance the deadline only after the real Hello is held. A busy CI runner
+  // must not consume the 100 ms budget before this test reaches its precondition.
+  // Keep real timer handles so Socket.IO can still clear its own timers normally.
+  const deadlines = [];
+  const timer = t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    if (delay !== 100) return realTimeout(callback, delay, ...args);
+    const handle = realTimeout(callback, 10000, ...args);
+    deadlines.push(() => { clearTimeout(handle); callback(...args); });
+    return handle;
+  });
+  try {
+    cut();
+    const deliver = await held.promise;
+    assert.equal(deadlines.length, 1);
+    assert.equal(events.some(x => x.phase === 'stopped'), false);
+    deadlines[0]();
+    assert.equal((await stopped.promise).code, 'TIMEOUT');
+    assert.equal(events.filter(x => x.phase === 'attempt').length, 1);
+    deliver(); await new Promise(resolve => realTimeout(resolve, 40));
+    assert.notEqual(ulda.status, 'open');
+    await ulda.reconnect();
+    assert.equal(ulda.status, 'open');
+  } finally {
+    off();
+    timer.mock.restore();
+  }
 });
 
 test('Invalid refresh stops recovery without retries or writes and preserves verified data', { timeout: 10000 }, async t => {
