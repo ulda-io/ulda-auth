@@ -52,3 +52,20 @@ test('Changed parts remain unpublished until complete and reject reordered, mism
   assert.throws(() => invalid.accept({ ...pieces[0], total: LIMITS.resourceBytes + 1 }), { code: 'LIMIT' });
   assert.throws(() => invalid.accept({ ...pieces[0], offset: 1 }), { code: 'LIMIT' });
 });
+
+test('temporary read admission failure does not split or replay and preserves the complete checked catalog', async t => {
+  const server = await fixture(), ulda = new Ulda(server.url, { allowInsecureLocalhost: true });
+  t.after(async () => { await ulda.close(); await server.close(); });
+  await ulda.register(crypto.randomUUID());
+  for (let i = 0; i < 65; i++) await ulda.add(`entry-${i}`, { n: i });
+  const before = ulda.snapshot(), finalId = [...server.records.keys()].at(-1);
+  server.faults.push({ action: 'read', match: ids => ids.includes(finalId), error: 'not_ready' });
+  const start = server.frames.length;
+  await assert.rejects(ulda.refresh(), { code: 'SERVER_ERROR' });
+  assert.deepEqual(ulda.snapshot(), before);
+  const frames = server.frames.slice(start);
+  assert.deepEqual(frames.map(x => [x.action, x.body.length]), [['read', 1], ['read', 64], ['read', 1]]);
+  // A deliberate later refresh succeeds. The failed command triggered neither
+  // singleton transfer fallback nor an automatic read/write retry.
+  await ulda.refresh(); assert.deepEqual(ulda.snapshot(), before);
+});
