@@ -55,10 +55,17 @@ test('Changed parts remain unpublished until complete and reject reordered, mism
 
 test('temporary read admission failure does not split or replay and preserves the complete checked catalog', async t => {
   const server = await fixture(), ulda = new Ulda(server.url, { allowInsecureLocalhost: true });
-  t.after(async () => { await ulda.close(); await server.close(); });
-  await ulda.register(crypto.randomUUID());
+  const writer = new Ulda(server.url, { allowInsecureLocalhost: true });
+  t.after(async () => { await ulda.close(); await writer.close(); await server.close(); });
+  const password = crypto.randomUUID(), master = await ulda.register(password);
   for (let i = 0; i < 65; i++) await ulda.add(`entry-${i}`, { n: i });
   const before = ulda.snapshot(), finalId = [...server.records.keys()].at(-1);
+  await writer.connect(master, password);
+  server.faults.push({ action: 'update', dropChanged: true });
+  await writer.update('entry-0', { n: 1000 });
+  assert.equal(ulda.value('entry-0').n, 0);
+  // The first group now contains a valid newer value. Failure in the last group
+  // must not expose that value before the whole refresh has been verified.
   server.faults.push({ action: 'read', match: ids => ids.includes(finalId), error: 'not_ready' });
   const start = server.frames.length;
   await assert.rejects(ulda.refresh(), { code: 'SERVER_ERROR' });
@@ -67,5 +74,7 @@ test('temporary read admission failure does not split or replay and preserves th
   assert.deepEqual(frames.map(x => [x.action, x.body.length]), [['read', 1], ['read', 64], ['read', 1]]);
   // A deliberate later refresh succeeds. The failed command triggered neither
   // singleton transfer fallback nor an automatic read/write retry.
-  await ulda.refresh(); assert.deepEqual(ulda.snapshot(), before);
+  await ulda.refresh();
+  assert.equal(ulda.value('entry-0').n, 1000);
+  assert.deepEqual(ulda.snapshot(), writer.snapshot());
 });
