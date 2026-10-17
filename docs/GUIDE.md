@@ -298,3 +298,7 @@ await ulda.data.notes.done.update(true);
 ~~~
 
 The implementation remains JavaScript. Declarations describe the application's expected shape; they do not add server-side schema validation or validate arbitrary input against your TypeScript type.
+
+## Capacity and compatibility
+
+See [Limits and capacity planning](LIMITS.md) for SDK bounds, interacting server budgets, eager-loading costs, atomicity, timeouts and upgrades from 1.0.x.

@@ -132,3 +132,7 @@ For repository tooling, see [development](https://github.com/ulda-io/ulda-auth/b
 [ULDA Library Community Source License 1.0](LICENSE.md), a source-available license with revenue and competitive-use conditions. Commercial licensing: [mark@shaposhnik.ch](mailto:mark@shaposhnik.ch).
 
 See the [licensing guide](docs/LICENSING.md) for a summary. Dependencies retain their own licenses.
+
+## Capacity and compatibility
+
+See [Limits and capacity planning](docs/LIMITS.md) for SDK bounds, interacting server budgets, eager-loading costs, atomicity, timeouts and upgrades from 1.0.x.

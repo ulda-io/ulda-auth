@@ -1,10 +1,11 @@
 # Changelog
 
-## Unreleased — planned 1.1.0
+## 1.1.0
 
 - Remove the fixed 63-content catalog limit; read larger catalogs in bounded ID batches.
 - Transfer large encrypted resources and atomic mutation batches in bounded frames, with a single server commit and complete Changed assembly before client publication.
 - Bound staging by bytes and deadlines; keep uncertain commits non-replayable. Require transfer-capable servers for operations beyond the ordinary wire limits.
+- Document effective server subscription, staging, queue and timeout limits, eager-loading costs and upgrade requirements.
 - Preserve public API signatures, the encrypted container format and the core dependency.
 
 ## 1.0.1

@@ -232,3 +232,7 @@ Servers use ordinary Changed whenever it fits. A legacy recipient that cannot de
 A development server may emit `ulda:diagnostic` with `{ action, step, ids, count }`. This is outside CRUD and requires no ACK. The standard transport reads it only when configured with `diagnostics: true`.
 
 Only recognized action/step codes and bounded metadata are accepted. Invalid diagnostic input is ignored. Trace timestamps, request sequence numbers and durations are local diagnostics, not fields added to CRUD or server resource records.
+
+## Capacity and compatibility
+
+See [Limits and capacity planning](LIMITS.md) for SDK bounds, interacting server budgets, eager-loading costs, atomicity, timeouts and upgrades from 1.0.x.

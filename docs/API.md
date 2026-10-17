@@ -264,3 +264,7 @@ PacketHandle has no public constructor. A plain object supplied to send is not a
 ## Limits
 
 See the [manifest](../MANIFEST.md) for numeric limits and the [security policy](../SECURITY.md) for trust and memory boundaries. Type declarations describe the API but do not replace runtime validation.
+
+## Capacity and compatibility
+
+See [Limits and capacity planning](LIMITS.md) for SDK bounds, interacting server budgets, eager-loading costs, atomicity, timeouts and upgrades from 1.0.x.

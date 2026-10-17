@@ -105,3 +105,7 @@ The normal ESM entry uses npm dependencies. The browser ESM bundles them and inc
 Private fields, non-extractable keys and best-effort cleanup do not isolate secrets from hostile code controlling the same page or process. [Secret lifecycle](docs/SECRET_LIFECYCLE.md) defines cleanup responsibilities.
 
 The [ULDA Library Community Source License](LICENSE.md) governs the SDK. Dependencies retain their own licenses; the core and server have separate scopes.
+
+## Capacity and compatibility
+
+See [Limits and capacity planning](docs/LIMITS.md) for SDK bounds, interacting server budgets, eager-loading costs, atomicity, timeouts and upgrades from 1.0.x.
