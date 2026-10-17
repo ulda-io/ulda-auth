@@ -89,6 +89,8 @@ See [Secret lifecycle](docs/SECRET_LIFECYCLE.md) for allocation and cleanup beha
 
 The SDK bounds JSON sizes, queues, batches and binary reconstruction. See the [manifest](MANIFEST.md) for exact limits. Parser checks do not impose a total memory limit on the browser or Node process: the runtime may have allocated a frame before validation.
 
+Large-operation frames contain ciphertext and public witnesses only. Framing does not change the encrypted container or its authentication. A compatible server must bound staged bytes, expire abandoned uploads, validate every candidate before one atomic commit, and keep an accepted commit's reservations until completion. The client does not expose a partial assembled Changed event or a partially checked catalog. Temporary transfer tokens do not add replay protection or resolve a lost Commit ACK. Larger catalogs increase client memory and processing costs despite bounded network frames.
+
 SDK diagnostics contain fixed event codes, IDs, counts, sizes and timings. They omit plaintext, content names, credentials, full origins and raw packets. Server error strings are mapped to fixed local errors. IDs and access patterns can still be sensitive metadata; protect application logs accordingly.
 
 The test reporter and local secret scanner reduce accidental disclosure during development. They do not sandbox arbitrary code or prove the absence of all secrets.

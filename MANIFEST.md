@@ -76,8 +76,11 @@ The client provides registration/opening, CRUD, nested references, local snapsho
 | Application JSON per resource | 1,048,576 UTF-8 bytes |
 | JSON nesting depth | 48 |
 | Visited JSON nodes | 40,000 |
-| Content entries per master | 63 |
-| Items per protocol batch/event | 64 |
+| Content entries per master | No fixed count; catalog bytes and server budgets apply |
+| Items per ordinary protocol batch/event or transfer append | 64 |
+| Reassembled encrypted resource | 67,108,864 bytes |
+| Logical transfer / queued incoming binary budget | 134,217,728 bytes |
+| Large-resource fragment | 1,048,576 bytes |
 | Combined witness/payload bytes per message | 8,388,608 |
 | Binary attachments per Socket.IO packet | 128 |
 | Bytes per binary attachment | 1,100,000 |
@@ -87,7 +90,11 @@ The client provides registration/opening, CRUD, nested references, local snapsho
 | Content name | 1–256 UTF-16 code units |
 | Master password input | 1–1024 UTF-16 code units |
 
-Container overhead and catalog metadata consume additional space; not every theoretical maximum can necessarily be combined in one batch. Oversized Read requests can be split into smaller groups. Atomic writes are not split.
+Container overhead and catalog metadata consume additional space; not every theoretical maximum can necessarily be combined in one batch. The 40,000-node and 1 MiB JSON limits apply to application content; the private catalog uses the resource byte budget (with 4,096 bytes reserved for envelope overhead) and a byte-derived node bound. JSON depth remains bounded in both cases.
+
+The SDK reads catalog contents in groups of at most 64 IDs and reduces the group when a server explicitly rejects its size. Large ciphertext is reassembled from fragments. Large atomic writes use a staged transfer followed by one commit, never separate partial mutations. Logical transfer accounting includes 256 bytes per item. This framing requires a server implementing the [transfer extension](docs/PROTOCOL.md#large-operation-transfer). Server subscription, Router, byte and timeout budgets can reject an otherwise valid catalog or operation.
+
+Catalogs are loaded eagerly: all required content is verified before a new snapshot is published. There is no lazy loading or nested-master API. Removing the fixed entry count does not promise unlimited memory, storage or operation size.
 
 ## Environment and distribution
 

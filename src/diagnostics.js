@@ -23,7 +23,7 @@ export const SERVER_STEPS = new Set([
 export function stepRecord(steps, step, resourceIds = [], count = 0) {
   check(steps.has(step), 'INVALID_PACKET');
   check(Array.isArray(resourceIds) && resourceIds.length <= LIMITS.batch, 'INVALID_PACKET');
-  check(Number.isSafeInteger(count) && count >= 0 && count <= LIMITS.batch, 'INVALID_PACKET');
+  check(Number.isSafeInteger(count) && count >= 0 && (steps === CLIENT_STEPS || count <= LIMITS.batch), 'INVALID_PACKET');
   return Object.freeze({ step, ids: Object.freeze(resourceIds.map(id)), count });
 }
 export function serverDiagnostic(raw) {

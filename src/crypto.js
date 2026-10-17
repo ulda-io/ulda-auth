@@ -103,7 +103,7 @@ function checkToken(token) {
 export const newContentSecret = randomSecret;
 export const newToken = randomSecret;
 export function envelope(payload) {
-  const bytes = binary(payload);
+  const bytes = binary(payload, LIMITS.resourceBytes);
   check(
     bytes.length >= 48 && equal(bytes.subarray(0, 4), MAGIC),
     "INVALID_PACKET",
@@ -116,7 +116,7 @@ export function envelope(payload) {
     header: bytes.subarray(0, 20),
   };
 }
-export async function seal(credentials, token, origin, data) {
+export async function seal(credentials, token, origin, data, catalog = false) {
   checkToken(token);
   const witness = await sign(origin);
   check(credentials.salt instanceof Uint8Array && credentials.salt.length === 16);
@@ -126,11 +126,11 @@ export async function seal(credentials, token, origin, data) {
     JSON.stringify({
       token,
       origin: b64(origin),
-      data: json(data),
+      data: json(data, catalog),
     }),
   );
   try {
-    check(plaintext.length <= LIMITS.payloadBytes - 48, "LIMIT");
+    check(plaintext.length <= (catalog ? LIMITS.resourceBytes : LIMITS.payloadBytes) - 48, "LIMIT");
     const cipher = new Uint8Array(
       await webcrypto().encrypt(
         {
@@ -165,7 +165,7 @@ export function sealedWire(handle) {
   const { witness, payload } = sealed.get(handle);
   return Object.freeze({ witness: witness.slice(), payload: payload.slice() });
 }
-export async function open(credentials, record, expectedToken) {
+export async function open(credentials, record, expectedToken, catalog = false) {
   let plaintext, origin, accepted = false;
   try {
     const witness = binary(record.witness, 167);
@@ -196,7 +196,7 @@ export async function open(credentials, record, expectedToken) {
     const result = {
       origin,
       token: decoded.token,
-      data: json(decoded.data),
+      data: json(decoded.data, catalog),
       witness,
       record: Object.freeze({
         id: record.id,

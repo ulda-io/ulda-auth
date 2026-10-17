@@ -45,6 +45,7 @@ export class Ulda {
   #sentCandidates = new Map();
   #inbound = Promise.resolve();
   #inboundCount = 0;
+  #inboundBytes = 0;
   #masterTail = Promise.resolve();
   #masterTasks = 0;
   #generation = 0;
@@ -88,10 +89,13 @@ export class Ulda {
     });
     this.#transportOff.push(this.#transport.on("changed", (event) => {
       const epoch = this.#connectionEpoch;
-      if (this.#inboundCount >= LIMITS.incoming)
+      const bytes = event.updated.reduce((n, x) => n + x.witness.length + x.payload.length + 256, event.deleted.length * 256);
+      if (this.#inboundCount >= LIMITS.incoming || this.#inboundBytes + bytes > LIMITS.transferBytes)
         return this.#fault(new UldaError("LIMIT"));
+      this.#inboundBytes += bytes;
       this.#serial(() => epoch === this.#connectionEpoch ? this.#changed(event) : undefined)
-        .catch((e) => { if (epoch === this.#connectionEpoch) this.#fault(e); });
+        .catch((e) => { if (epoch === this.#connectionEpoch) this.#fault(e); })
+        .finally(() => { this.#inboundBytes -= bytes; });
     }));
     this.#transportOff.push(this.#transport.on("disconnect", (event) => {
       this.#connectionEpoch++;
@@ -154,7 +158,7 @@ export class Ulda {
     if (!this.#listeners.get("trace")?.size) return;
     try {
       this.#emit("trace", Object.freeze({ time: Date.now(), phase: "client", event: step,
-        ...stepRecord(CLIENT_STEPS, step, ids, count) }));
+        ...stepRecord(CLIENT_STEPS, step, ids.slice(0, LIMITS.batch), count) }));
     } catch { /* Diagnostic callbacks never change operation results. */ }
   }
   async #openRecord(credentials, record, token, kind = "content") {
@@ -163,7 +167,7 @@ export class Ulda {
     // The role comes only from the client's decrypted catalog / chosen login ID.
     this.#trace(`${kind}.decrypt`, [record.id]);
     this.#guard(generation);
-    const result = await open(credentials, record, token);
+    const result = await open(credentials, record, token, kind === "master");
     try { this.#guard(generation); }
     catch (error) { result.origin.fill(0); throw error; }
     this.#trace(`${kind}.opened`, [record.id]);
@@ -250,7 +254,7 @@ export class Ulda {
   #catalog(data) {
     exact(data, ["contents"]);
     check(
-      Array.isArray(data.contents) && data.contents.length < LIMITS.resources,
+      Array.isArray(data.contents),
       "LIMIT",
     );
     const names = new Set(),
@@ -277,11 +281,12 @@ export class Ulda {
     const generation = this.#generation;
     this.#guard(generation);
     this.#trace("write.prepare", [base.id]);
-    const data = json(change(json(base.data)));
+    const catalog = base.id === this.#root?.id;
+    const data = json(change(json(base.data, catalog)), catalog);
     const origin = advance(base.origin);
     try {
       this.#trace("chain.advance", [base.id]);
-      const sealed = await seal(credentials, base.token, origin, data);
+      const sealed = await seal(credentials, base.token, origin, data, catalog);
       this.#guard(generation);
       this.#trace("write.sealed", [base.id]);
       const wire = sealedWire(sealed);
@@ -505,23 +510,29 @@ export class Ulda {
     const map = new Map();
     if (!entries.length) return map;
     this.#trace("content.read", entries.map(x => x.id), entries.length);
-    const records = await this.#readRecords(entries.map((x) => x.id), signal);
-    for (const entry of entries) {
-      checkSignal(signal);
-      const record = records.find((x) => x.id === entry.id);
-      const credentials = await contentCredentials(entry.key, envelope(record.payload).salt);
-      this.#trace("content.key", [entry.id]);
-      const state = {
-        id: entry.id,
-        ...(await this.#openRecord(credentials, record, entry.token)),
-      };
-      await this.#checkProgress(
-        this.#resources.get(entry.id)?.state,
-        state,
-        fresh,
-      );
-      map.set(entry.id, { state, credentials });
-      this.#trace("content.staged", [entry.id]);
+    // Read/decrypt bounded batches; only publish the complete verified map.
+    try {
+      for (let start = 0; start < entries.length; start += LIMITS.batch) {
+        const group = entries.slice(start, start + LIMITS.batch);
+        const records = new Map((await this.#readRecords(group.map(x => x.id), signal)).map(r => [r.id, r]));
+        for (const entry of group) {
+          checkSignal(signal);
+          const record = records.get(entry.id);
+          const credentials = await contentCredentials(entry.key, envelope(record.payload).salt);
+          this.#trace("content.key", [entry.id]);
+          const state = {
+            id: entry.id,
+            ...(await this.#openRecord(credentials, record, entry.token)),
+          };
+          try { await this.#checkProgress(this.#resources.get(entry.id)?.state, state, fresh); }
+          catch (error) { state.origin.fill(0); throw error; }
+          map.set(entry.id, { state, credentials });
+          this.#trace("content.staged", [entry.id]);
+        }
+      }
+    } catch (error) {
+      for (const resource of map.values()) resource.state.origin.fill(0);
+      throw error;
     }
     return map;
   }
@@ -616,7 +627,6 @@ export class Ulda {
         !this.#root.data.contents.some((x) => x.name === content),
         "EXISTS",
       );
-      check(this.#root.data.contents.length + 1 < LIMITS.resources, "LIMIT");
       let pending = this.#adds.get(content);
       if (pending)
         check(

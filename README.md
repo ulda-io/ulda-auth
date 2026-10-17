@@ -4,6 +4,8 @@ A JavaScript SDK for encrypted JSON resources over Socket.IO, built on [ULDA Cor
 
 ULDA Auth encrypts application data on the client, maintains a separate ULDA chain for each resource, and synchronizes changes across connected clients. Applications work with JSON and explicit update methods.
 
+Catalogs have no fixed content-entry count limit. The SDK uses bounded read batches and, with a transfer-capable server, stages large encrypted operations for a single atomic commit. Byte, memory and server admission budgets still apply; see [large catalogs](docs/GUIDE.md#large-catalogs).
+
 ## Install
 
 ~~~sh

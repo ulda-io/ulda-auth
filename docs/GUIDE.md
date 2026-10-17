@@ -1,5 +1,24 @@
 # Usage guide
 
+## Large catalogs
+
+A master can reference more than 63 contents without changing application calls. Opening or refreshing reads at most 64 content IDs per request, reducing batches if a response is too large. The SDK verifies every required record before publishing the combined local state. Separate batches are not one database snapshot across concurrent writes.
+
+Large catalogs need a server implementing the [transfer extension](PROTOCOL.md#large-operation-transfer). Large encrypted resources travel in 1 MiB fragments; a large `superDelete()` uploads all proofs before one atomic commit. Uploading a partial operation never deletes a partial catalog.
+
+For workloads whose server commit may exceed the default ten-second ACK deadline, configure a measured timeout, for example:
+
+~~~js
+const ulda = new Ulda(endpoint, { timeout: 60_000 });
+await ulda.connect(masterId, password);
+~~~
+
+This timeout is per transport request, not the time budget for loading the entire catalog. Automatic reconnect has its own overall budget. A timeout after Commit can leave an unknown outcome and never authorizes automatic write replay.
+
+There is no numeric catalog-entry quota in the client, but this is not unlimited storage: the encrypted catalog must fit 64 MiB, a logical transfer must fit 128 MiB including item accounting, and the server must have sufficient subscriptions, Router capacity and memory budgets. Application content retains its 1 MiB JSON limit. The client loads/decrypts all listed content eagerly, so opening and refreshing cost time and memory proportional to the data. Nested masters and lazy loading are not implemented.
+
+Upgrade the server and all clients using a shared catalog before exceeding the old limits. Existing containers keep their format; older clients retain their old catalog limits.
+
 ## 1. Connect to a compatible server
 
 ~~~js

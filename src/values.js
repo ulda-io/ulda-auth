@@ -5,7 +5,9 @@ export const LIMITS = Object.freeze({
   messageBytes: 8_388_608,
   incoming: 8,
   batch: 64,
-  resources: 64,
+  // Resource/transfer byte budgets are independent of catalog entry count.
+  resourceBytes: 64 * 1_048_576,
+  transferBytes: 128 * 1_048_576,
   queue: 128,
   depth: 48,
   nodes: 40_000,
@@ -82,15 +84,17 @@ export function exact(value, keys) {
   );
 }
 // Clone JSON without invoking getters, toJSON or custom prototypes.
-export function json(value) {
+export function json(value, catalog = false) {
+  const bytesLimit = catalog ? LIMITS.resourceBytes - 4096 : LIMITS.jsonBytes;
+  const nodesLimit = catalog ? bytesLimit : LIMITS.nodes;
   const seen = new Set();
   let nodes = 0,
     characters = 0;
   function visit(v, depth) {
-    check(++nodes <= LIMITS.nodes && depth <= LIMITS.depth, "LIMIT");
+    check(++nodes <= nodesLimit && depth <= LIMITS.depth, "LIMIT");
     if (typeof v === "string") {
       characters += v.length;
-      check(characters <= LIMITS.jsonBytes, "LIMIT");
+      check(characters <= bytesLimit, "LIMIT");
       return v;
     }
     if (v === null || typeof v === "boolean") return v;
@@ -109,11 +113,11 @@ export function json(value) {
     seen.add(v);
     const result = array ? [] : Object.create(null);
     const keys = Reflect.ownKeys(v).filter((k) => !(array && k === "length"));
-    if (array) check(keys.length === v.length && v.length <= LIMITS.nodes);
+    if (array) check(keys.length === v.length && v.length <= nodesLimit);
     for (const key of keys) {
       check(typeof key === "string");
       characters += key.length;
-      check(characters <= LIMITS.jsonBytes, "LIMIT");
+      check(characters <= bytesLimit, "LIMIT");
       if (array) check(/^(0|[1-9][0-9]*)$/.test(key) && Number(key) < v.length);
       const desc = Object.getOwnPropertyDescriptor(v, key);
       check(desc.enumerable && Object.hasOwn(desc, "value"));
@@ -128,7 +132,7 @@ export function json(value) {
     return result;
   }
   const result = visit(value, 0);
-  check(utf8(JSON.stringify(result)).length <= LIMITS.jsonBytes, "LIMIT");
+  check(utf8(JSON.stringify(result)).length <= bytesLimit, "LIMIT");
   return result;
 }
 export function pathValue(value, path) {

@@ -142,7 +142,8 @@ Refresh does not lock the server. A concurrent writer can still cause conflict a
 ~~~text
 acquire exclusive guard -> refresh all listed resources
 prepare a next-witness deletion proof for each content and the master
-check guards -> one Delete batch
+check guards -> one logical Delete operation
+if larger than one frame: begin -> append proof groups -> commit
 server validates and deletes all or none
 on valid ACK: close SDK and release the context
 ~~~
@@ -152,6 +153,7 @@ A missing or invalid required resource stops preflight. The method cannot discov
 ## Incoming Changed
 
 ~~~text
+if fragmented: bounded begin/append/part/end assembly -> one complete event
 validate event shape and limits -> enqueue in the bounded incoming sequence
 stage known resource updates; authenticate/decrypt and verify lineage
 if master changed: validate its catalog and resolve newly referenced content by Read

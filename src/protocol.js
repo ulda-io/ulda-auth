@@ -18,23 +18,23 @@ const put = (action, body) => {
   packets.set(p, { action, body });
   return p;
 };
-function array(items) {
+function array(items, extended = false) {
   check(
-    Array.isArray(items) && items.length > 0 && items.length <= LIMITS.batch,
+    Array.isArray(items) && items.length > 0 && items.length <= (extended ? Math.floor(LIMITS.transferBytes / 256) : LIMITS.batch),
     "INVALID_PACKET",
   );
 }
-function ids(items) {
-  array(items);
+function ids(items, extended = false) {
+  array(items, extended);
   items.forEach(id);
   check(new Set(items).size === items.length, "INVALID_PACKET");
 }
-export function messageSize(items) {
-  let size = 0;
+export function messageSize(items, extended = false) {
+  let size = extended ? items.length * 256 : 0;
   for (const item of items) {
     size += binary(item?.witness, 167).byteLength;
-    if (Object.hasOwn(item, "payload")) size += binary(item.payload).byteLength;
-    check(size <= LIMITS.messageBytes, "LIMIT");
+    if (Object.hasOwn(item, "payload")) size += binary(item.payload, extended ? LIMITS.resourceBytes : LIMITS.payloadBytes).byteLength;
+    check(size <= (extended ? LIMITS.transferBytes : LIMITS.messageBytes), "LIMIT");
   }
 }
 export function emptyPacket(action) {
@@ -47,8 +47,8 @@ export function readPacket(resourceIds) {
 }
 export function writePacket(action, items) {
   check(action === "create" || action === "update");
-  array(items);
-  if (action === "update") ids(items.map((x) => x.id));
+  array(items, true);
+  if (action === "update") ids(items.map((x) => x.id), true);
   const body = items.map((item) =>
     action === "create"
       ? { ...sealedWire(item.sealed) }
@@ -66,16 +66,16 @@ export async function deletionProof(resourceId, origin) {
   return handle;
 }
 export function deletePacket(proofs, updates = []) {
-  array(proofs);
+  array(proofs, true);
   const body = proofs.map((proof) => {
     check(deletionProofs.has(proof), "INVALID_PACKET");
     return { ...deletionProofs.get(proof) };
   });
   check(Array.isArray(updates), "INVALID_PACKET");
   for (const item of updates) body.push({ id: id(item.id), ...sealedWire(item.sealed) });
-  array(body);
-  messageSize(body);
-  ids(body.map((x) => x.id));
+  array(body, true);
+  messageSize(body, true);
+  ids(body.map((x) => x.id), true);
   return put("delete", body);
 }
 export function outgoing(packet) {
@@ -86,7 +86,7 @@ export function outgoing(packet) {
     typeof item === "string" ? item : {
       ...(item.id === undefined ? {} : { id: item.id }),
       witness: binary(item.witness, 167).slice(),
-      ...(item.payload === undefined ? {} : { payload: binary(item.payload).slice() }),
+      ...(item.payload === undefined ? {} : { payload: binary(item.payload, LIMITS.resourceBytes).slice() }),
     }) : {} };
 }
 export function resource(value) {
@@ -97,10 +97,10 @@ export function resource(value) {
   return Object.freeze({
     id: value.id,
     witness: binary(value.witness, 167).slice(),
-    payload: binary(value.payload).slice(),
+    payload: binary(value.payload, LIMITS.resourceBytes).slice(),
   });
 }
-export function requestShape(action, body) {
+export function requestShape(action, body, extended = false) {
   check(actions.has(action), "INVALID_PACKET");
   if (action === "hello" || action === "session.close") {
     exact(body, []);
@@ -110,13 +110,13 @@ export function requestShape(action, body) {
     ids(body);
     return;
   }
-  array(body);
-  if (action !== "delete") messageSize(body);
+  array(body, extended);
+  if (action !== "delete") messageSize(body, extended);
   else {
     check(body.some(item => !Object.hasOwn(item, "payload")), "INVALID_PACKET");
-    messageSize(body);
+    messageSize(body, extended);
   }
-  if (action !== "create") ids(body.map((x) => x.id));
+  if (action !== "create") ids(body.map((x) => x.id), extended);
   body.forEach((x) => {
     exact(
       x,
@@ -130,7 +130,7 @@ export function requestShape(action, body) {
     if (action !== "delete" || Object.hasOwn(x, "payload")) envelope(x.payload);
   });
 }
-export function acknowledgement(action, body, raw) {
+export function acknowledgement(action, body, raw, extended = false) {
   check(
     raw && typeof raw === "object" && !Array.isArray(raw),
     "INVALID_PACKET",
@@ -158,10 +158,10 @@ export function acknowledgement(action, body, raw) {
   check(raw.ok === true, "INVALID_PACKET");
   if (action === "read" || action === "create") {
     exact(raw, ["ok", "data"]);
-    array(raw.data);
+    array(raw.data, extended);
     check(raw.data.length === body.length, "INVALID_PACKET");
     if (action === "create") {
-      ids(raw.data);
+      ids(raw.data, extended);
       return [...raw.data];
     }
     messageSize(raw.data);
@@ -176,7 +176,7 @@ export function acknowledgement(action, body, raw) {
   exact(raw, ["ok"]);
   return undefined;
 }
-export function changed(raw) {
+export function changed(raw, extended = false) {
   check(raw && typeof raw === "object", "INVALID_PACKET");
   exact(
     raw,
@@ -187,10 +187,10 @@ export function changed(raw) {
   check(
     Array.isArray(inputUpdated) &&
       Array.isArray(inputDeleted) &&
-      inputUpdated.length + inputDeleted.length <= LIMITS.batch,
+      inputUpdated.length + inputDeleted.length <= (extended ? Math.floor(LIMITS.transferBytes / 256) : LIMITS.batch),
     "INVALID_PACKET",
   );
-  messageSize(inputUpdated);
+  messageSize(inputUpdated, extended);
   const updated = inputUpdated.map(resource),
     deleted = inputDeleted.map(id);
   const all = [...updated.map((x) => x.id), ...deleted];

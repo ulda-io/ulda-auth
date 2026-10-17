@@ -194,9 +194,38 @@ Live Changed requires valid lineage. Explicit refresh/reconnect may accept a new
 
 Oversized Read requests may be split into smaller arrays. Each reply must still match its request. The SDK publishes the combined snapshot only after all required records pass verification. Separate reads do not provide one global database snapshot across concurrent changes.
 
-Atomic Update/Delete batches are never split. The supported limits are in the [manifest](../MANIFEST.md).
+Atomic Update/Delete operations are never split into separate commits. Their transport frames may be split using the extension below. The supported limits are in the [manifest](../MANIFEST.md).
 
-No operation IDs, offline replay, ACL fields, CRDT merge or password-reset protocol are supplied by this contract. A compatible implementation in another language must preserve the byte format, validation rules, atomicity and failure semantics.
+No durable operation IDs, offline replay, ACL fields, CRDT merge or password-reset protocol are supplied by this contract. A compatible implementation in another language must preserve the byte format, validation rules, atomicity and failure semantics.
+
+## Large-operation transfer
+
+The transport advertises `auth: { uldaTransfer: 1 }` in the Socket.IO handshake. This is a framing capability, not authentication or a resource role. Ordinary CRUD shapes remain unchanged. A transfer-capable server is required once an operation exceeds those limits; older servers must not be assumed to support large catalogs.
+
+Content reads use arrays of at most 64 IDs, sequentially. For 300 entries this means five requests, not 300 individual reads. An explicit `too_large` response causes the SDK to bisect a read group. A missing or malformed reply is not treated as a successful partial result. There is no global database snapshot across these requests.
+
+All extension commands use the `ulda:transfer` event and one ACK callback:
+
+| Body | Success ACK / meaning |
+|---|---|
+| `{kind:'begin', action:'create'\|'update'\|'delete', count}` | `{ok:true, token}`; reserve an in-memory operation, no database mutation |
+| `{kind:'append', token, items}` | `{ok:true}`; append up to 64 ordinary action entries within 8 MiB |
+| `{kind:'part', token, resourceId?, witness, total, offset, payload}` | `{ok:true}`; append at most 1 MiB of one encrypted resource; omit resourceId only for Create |
+| `{kind:'commit', token}` | Original action's success ACK, only after the complete atomic commit |
+| `{kind:'cancel', token}` | `{ok:true}`; discard an uncommitted upload |
+| `{kind:'read', resourceId, offset}` | `{ok:true, data:{id,witness,payload,total,offset}}`; at most 1 MiB from a pinned encrypted snapshot |
+
+Tokens are random 32-character lowercase hexadecimal strings scoped to one connection. They are temporary staging references, not persisted resource metadata or idempotency keys. Each connection permits one staged write and one large read. All offsets and totals are byte counts. Parts for a resource are contiguous, starting at zero, with an unchanged ID, witness and total. No plaintext catalog names, credentials or origins are added.
+
+The server checks staging bytes and deadlines before retaining complete data. On Commit it holds every affected resource key, validates all candidate witnesses against current storage, then makes one atomic storage call. A conflict in the last validation group prevents every mutation. No database transaction is held open while the client uploads frames. A disconnect or deadline discards uncommitted staging; a Commit already accepted may finish after disconnect.
+
+The SDK never replays an uncertain mutation. A lost/malformed Commit ACK yields `UNKNOWN_OUTCOME`, even if storage committed. A pre-Commit timeout cannot itself commit staged bytes. The transport disconnects after an interrupted transfer to clear staging. A definite `too_large` rejection of an ordinary write may select staged framing; it is not a replay of an uncertain write.
+
+A singleton Read rejected as too large selects `kind:'read'`. Offset zero pins one bounded ciphertext snapshot; subsequent offsets continue that same version. The server releases it after the final fragment, expiry or disconnect. The SDK requires a complete matching ID/witness/total, then runs ordinary container and cryptographic validation before exposing anything.
+
+Large notifications use ordered `ulda:changed.part` frames without ACKs: `{kind:'begin',count}`, followed by `{kind:'append',items}` and/or `{kind:'part',resourceId,witness,total,offset,payload}`, then `{kind:'end'}`. Append items are updated `{id,witness,payload}` records or deleted `{id}` entries. The client reconstructs and validates the complete logical event before publishing it. Partial, oversized, out-of-order or timed-out assemblies cannot publish partial data.
+
+Servers use ordinary Changed whenever it fits. A legacy recipient that cannot decode a larger change is disconnected rather than left silently stale. Upgrade the server and every client sharing a catalog before growing it beyond the old limits. Existing encrypted records require no format migration; an older SDK still enforces its old catalog limits.
 
 ## Optional diagnostics
 

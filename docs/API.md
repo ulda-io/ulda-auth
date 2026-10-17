@@ -121,7 +121,7 @@ Creates a content resource and adds one encrypted entry to the master.
 { ok: true, name, subscriptionReady }
 ~~~
 
-The name must not already exist. The master can contain at most 63 content entries. Mode is fixed at creation.
+The name must not already exist. There is no fixed content-entry count limit in a master. Encrypted catalog bytes, operation bytes and the server's admission budgets still apply; see the [manifest](../MANIFEST.md#limits). Mode is fixed at creation.
 
 The operation reserves an encrypted empty resource, then sends one atomic Update for the content and master. The reservation is a separate commit. `subscriptionReady` is the transport's connection state at completion, not a permanent delivery guarantee.
 
