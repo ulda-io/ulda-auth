@@ -38,4 +38,4 @@ The generated browser distribution includes `THIRD_PARTY_LICENSES.md`. Distribut
 
 The SDK license does not replace the licenses of `ulda-core`, Socket.IO or other dependencies. Separate server, SaaS and enterprise products have their own terms; this document does not grant rights for them.
 
-Commercial inquiries: [mark@shaposhnik.ch](mailto:mark@shaposhnik.ch). Commercial rights arise from a written agreement granted by the parties authorized under the license, not from an inquiry alone.
+Commercial inquiries: [admin@ulda.io](mailto:admin@ulda.io). Commercial rights arise from a written agreement granted by the parties authorized under the license, not from an inquiry alone.

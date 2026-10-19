@@ -2,7 +2,7 @@
 
 ## Report a vulnerability
 
-Report vulnerabilities privately to [mark@shaposhnik.ch](mailto:mark@shaposhnik.ch). You may also use [GitHub private vulnerability reporting](https://github.com/ulda-io/ulda-auth/security/advisories/new) when it is enabled for the repository.
+Report vulnerabilities privately to [admin@ulda.io](mailto:admin@ulda.io). You may also use [GitHub private vulnerability reporting](https://github.com/ulda-io/ulda-auth/security/advisories/new) when it is enabled for the repository.
 
 Include the affected package version, environment, expected and observed behavior, impact, and a minimal reproduction using synthetic data. Do not include live passwords, keys, origins, tokens, decrypted catalogs or customer data. Do not disclose an unpatched vulnerability in a public issue.
 
