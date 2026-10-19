@@ -112,7 +112,26 @@ With a bundler:
 import { Ulda } from 'ulda-auth/browser';
 ~~~
 
-This entry bundles the core and Socket.IO dependencies. Without a bundler, host `dist/ulda-library.js` with the accompanying license notices and import it from your own page using `<script type="module">`. Bare npm package names require a bundler or import map.
+This entry bundles the core and Socket.IO dependencies. You do not need to load ULDA Core separately when using the SDK.
+
+Without a bundler, import the published standalone ESM file from jsDelivr:
+
+~~~html
+<script type="module">
+  import { Ulda } from 'https://cdn.jsdelivr.net/npm/ulda-auth@1.1.0/dist/ulda-library.js';
+  // Use Ulda with your application's server URL and user credentials.
+</script>
+~~~
+
+The same file is available from UNPKG:
+
+~~~js
+import { Ulda } from 'https://unpkg.com/ulda-auth@1.1.0/dist/ulda-library.js';
+~~~
+
+[jsDelivr](https://www.jsdelivr.com/) and [UNPKG](https://unpkg.com/) serve public npm releases automatically; a separate CDN upload is not required. Keep the complete version and file path in the URL to select this standalone browser build. Use an HTTPS page and endpoint; loopback development requires the explicit local option described in the [guide](docs/GUIDE.md).
+
+For self-hosting, copy `dist/ulda-library.js` and its accompanying `dist/THIRD_PARTY_LICENSES.md` from the same package version. The [SDK and dependency notices](https://cdn.jsdelivr.net/npm/ulda-auth@1.1.0/dist/THIRD_PARTY_LICENSES.md) are also available on the CDN. Import the file from `<script type="module">`; it does not create a global `Ulda` variable. Bare npm package names require a bundler or import map.
 
 ## Documentation
 
